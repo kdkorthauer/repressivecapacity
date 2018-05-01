@@ -1,0 +1,906 @@
+---
+title: "Alternate versions of Figure 5 from Ford et al. (2017)"
+author: "Keegan Korthauer"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+   html_document:
+        toc: true
+        toc_float: true
+        highlight: tango
+        number_sections: true
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Summary
+
+Code to download and analyze the processed methylation count data from
+the Lister Lab paper by Ford et al., 
+"Frequent lack of repressive capacity of promoter DNA methylation identified 
+through genome-wide epigenomic manipulation" (
+available on [BioRxiv](https://www.biorxiv.org/content/early/2017/09/20/170506)).
+
+The WGBS methylation counts for all cytosines are provided on GEO 
+(accession number GSE102395). 
+
+# Workspace Setup
+
+First we load the necessary packages.
+
+```{r, workspace, message=FALSE, warning=FALSE}
+library(GEOquery)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(GenomicRanges)
+library(ggplot2)
+library(R.utils)
+library(DESeq2)
+library(annotatr)
+library(bsseq)
+library(dmrseq)
+library(BiocParallel)
+library(chunked)
+library(DelayedMatrixStats)
+
+# data directory
+datdir <- "../DATA"
+dir.create(datdir, showWarnings = FALSE)
+
+# rscript directory
+rdir <- "../R/"
+sourceDirectory(rdir)
+
+# results directory
+resdir <- "../RESULTS"
+dir.create(resdir, showWarnings = FALSE)
+
+# parallel backend
+ncores <- 6
+register(MulticoreParam(workers=ncores))
+
+# FDR significance levels for differential expression and DMR analyses
+fdrlevel.dmr <- 0.05
+fdrlevel.de <- 0.05
+```
+
+# Data download
+
+We will download the cytosine methylation counts for the following WGBS samples:
+
+>GSM2735962 	MCF7_emptyVector_doxInduced_rep1_WGBS
+>GSM2735963 	MCF7_empytVector_doxWithdrawn_rep1_WGBS
+>GSM2735964 	MCF7_ZF_DNMT3A_doxInduced_rep1_WGBS
+>GSM2735965 	MCF7_ZF_DNMT3A_doxInduced_rep2_WGBS
+>GSM2735966 	MCF7_ZF_DNMT3A_doxInduced_rep3_WGBS
+>GSM2735967 	MCF7_ZF_DNMT3A_doxWithdrawn_rep1_WGBS
+>GSM2735968 	MCF7_ZF_DNMT3A_doxWithdrawn_rep2_WGBS
+>GSM2735969 	MCF7_ZF_DNMT3A_noDox_rep1_WGBS
+
+As well as the expression counts. First we get the cytosine methylation counts.
+Since we are only interested in the CpG methylation context, we also filter 
+these files by rows where the 4th column is equal to `CG`. This step requires that
+the system has the `awk` command available.
+
+```{r, downloadGEO}
+# methylation counts
+meta = pData(phenoData(getGEO("GSE102395")[[1]]))
+filePaths <- as.character(meta$supplementary_file_1[grepl("WGBS", meta$description)])
+corrupt <- NULL
+
+for (file in filePaths){
+  fi <- file.path(datdir,
+              sapply(strsplit(file, "/"), function(x) x[length(x)]))
+  err <- gsub(".gz", "", fi)
+  if (!file.exists(fi) && !file.exists(gsub(".gz", "", fi))){
+    download.file(url = file, destfile = fi)
+  }
+   
+  if (!file.exists(gsub(".gz", "", fi))){
+    err <- try(gunzip(fi), silent = TRUE) 
+  }
+  
+  if (err==gsub(".gz", "", fi)){
+    message("Downloaded and unzipped file ", fi)
+  
+    if (!file.exists(gsub("allC", "CpG", gsub(".gz", "", fi)))){
+      system(paste0("awk '($4 == \"CG\")' ", gsub(".gz", "", fi),
+                  " > ", gsub("allC", "CpG", gsub(".gz", "", fi))))
+    }
+    message("CpGs filtered for file ", gsub("allC", "CpG", gsub(".gz", "", fi)))
+  }else{
+    message(err)
+    message("Skipping file ", fi, " since it is corrupt.")
+    corrupt <- c(corrupt, fi)
+    file.remove(fi)
+  }
+}
+```
+
+Since one of the files failed download, manually download from Lister lab's
+public website (per email with Ethan Ford).
+
+```{r, downloadFailedFile}
+if (length(corrupt) == 1){
+  if (!file.exists(corrupt) && !file.exists(gsub(".gz", "", corrupt))){
+     download.file(url = "http://cpebrazor.ivec.org/public/listerlab/ethan/Public/MCF7_ZF_DNMT3A_doxInduced_rep2.allC.gz",
+       destfile = corrupt)
+  } 
+  err <- gsub(".gz", "", corrupt)  
+  if (!file.exists(gsub(".gz", "", corrupt))){
+     err <- try(gunzip(corrupt), silent = TRUE) 
+  }
+  
+  if (err==gsub(".gz", "", corrupt)){
+    message("Downloaded and unzipped file ", corrupt)
+  
+    if (!file.exists(gsub("allC", "CpG", gsub(".gz", "", corrupt)))){
+      system(paste0("awk '($4 == \"CG\")' ", gsub(".gz", "", corrupt),
+                  " > ", gsub("allC", "CpG", gsub(".gz", "", corrupt))))
+    }
+    message("CpGs filtered for file ", gsub("allC", "CpG", gsub(".gz", "", corrupt)))
+  }
+}else if (length(corrupt) > 1){
+  stop("More than one file is corrupt")
+}else{
+  message("All files downloaded and unzipped")
+}
+```
+
+Next, we download the expression count matrix.
+
+```{r, downloadGEO2}
+# expression counts
+file <- file.path(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt")
+
+if (!file.exists(file)){
+  download.file(url = "ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE102nnn/GSE102395/suppl/GSE102395%5FMCF7%5FZF%5FDNMT3A%5Fcountstable%2Etxt%2Egz",
+              destfile = paste0(file, ".gz"),
+              mode="wb")
+  gunzip(paste0(file, ".gz"))
+}
+```
+
+# Read in data tables
+
+Now we'll read in the methylation count tables and convert them to bsseq objects.
+This uses the `read.lister` function sourced in by the script in the `R` directory.
+
+```{r, read.lister}
+bfile <- file.path(datdir, "bsseq.rds")
+
+if (!file.exists(bfile)){
+  files <- list.files(datdir, pattern = ".CpG.txt", full.names = TRUE)
+  
+  bs <- read.lister(files, sampleNames = files, rmZeroCov = TRUE,
+                    strandCollapse = TRUE, mc.cores = ncores)
+  if ("BSseq" %in% class(bs)){
+    saveRDS(bs, bfile)
+  }
+}else{
+  bs <- readRDS(bfile)
+}
+
+show(bs)
+```
+
+We'll add the metadata so we can easily access the condition information in 
+further analyses.
+
+```{r, meta}
+if(ncol(pData(bs))==0){
+  sampleNames(bs) <- unlist(sapply(strsplit(sampleNames(bs), "//"), 
+                                   function(x) x[[2]]))
+  sampleNames(bs) <- unlist(sapply(strsplit(sampleNames(bs), ".CpG"), 
+                                 function(x) x[[1]]))
+  meta$basefile <- unlist(sapply(strsplit(as.character(meta$supplementary_file_1),
+                                          "suppl/"), function(x) x[[length(x)]]))
+  meta$basefile <- unlist(sapply(strsplit(meta$basefile, ".allC"), 
+                                 function(x) x[[1]]))
+  
+  pdat <- meta[meta$basefile %in% sampleNames(bs),] %>%
+    mutate(condition = ifelse(grepl("Vector", source_name_ch1), 
+                              "Control", "Methylated"),
+           dox = ifelse(grepl("noDox", source_name_ch1), "No DOX", 
+                        ifelse(grepl("doxInduced", source_name_ch1), "DOX", 
+                               "Dox Withdrawal")))
+  pData(bs) <- pdat
+  saveRDS(bs, bfile)
+}
+```
+
+## Exploratory analysis
+
+Plots of coverage by sample:
+
+```{r, methplot, fig.width = 8, fig.height = 6}
+set.seed(486)
+idx <- sample(1:nrow(bs), 1e6)
+plotEmpiricalDistribution(bs[idx,], 
+                          testCovariate = "condition",
+                          type = "Cov")
+
+plotEmpiricalDistribution(bs[idx, pData(bs)$condition=="Methylated"], 
+                          testCovariate = "dox",
+                          bySample = TRUE,
+                          type = "Cov")
+```
+
+Plots of beta values by sample:
+
+```{r, methplot2, fig.width = 8, fig.height = 6}
+plotEmpiricalDistribution(bs[idx,], 
+                          testCovariate = "condition",
+                          adj = 4)
+
+plotEmpiricalDistribution(bs[idx, pData(bs)$condition=="Methylated"], 
+                          testCovariate = "dox",
+                          bySample = TRUE,
+                          adj = 4)
+```
+
+# DMR analysis
+
+```{r, eval=FALSE, results='hide', echo=FALSE, include=FALSE}
+# test out if parallel is functioning properly
+library(BiocParallel)
+tf <- function(){
+  message("a.", appendLF=FALSE)
+  Sys.sleep(1)
+}
+
+#without parallel
+system.time({a <- lapply(1:16, function(x) tf())})
+
+register(MulticoreParam(8))  
+system.time({a <- bplapply(1:16, function(x) tf())})
+```
+
+We will use dmrseq to identify Differentially Methylated Regions (DMRs). 
+
+First we filter on the samples we will use for the analysis. Specifically, we'll
+keep only the control samples and the DOX-induced samples with the MCF7-ZF vector.
+
+```{r, filtsamples}
+bs <- bs[,pData(bs)$condition == "Control" | 
+          pData(bs)$dox == "DOX"]
+```
+
+Next we have to filter the loci by coverage (remove those with zero coverage
+in at least one condition).
+
+```{r, filter}
+cov.mat <- getCoverage(bs, type="Cov")
+filter <- pmax( 1*(rowSums2(cov.mat[,pData(bs)$condition == "Control"]) == 0),
+                1*(rowSums2(cov.mat[,pData(bs)$condition == "Methylated"]) == 0))
+filter <- which(filter > 0)
+bs <- bs[-filter,]
+rm(cov.mat)
+```
+
+This removed `r length(filter)` out of `r nrow(bs)` loci (
+`r signif(100*length(filter)/nrow(bs), 2)`%). Now we'll run dmrseq.
+
+```{r, dmrseq, message=FALSE}
+resfile <- file.path(resdir, "regions.rds")
+
+if (!file.exists(resfile)){
+  regions <- dmrseq(bs, testCovariate = "condition",
+                    bpSpan = 500,
+                    maxGap = 500,
+                    maxPerms = 4)
+  saveRDS(regions, file=resfile)
+}else{
+  regions <- readRDS(resfile)
+}
+
+# sort on qval overall (currently sorted within chromsome)
+regions <- regions[order(regions$qval, seqnames(regions)),]
+
+sum(regions$qval < fdrlevel.dmr)
+```
+We'll add the raw mean methylation differences to the region summaries and plot
+the top 20 regions.
+
+```{r}
+regions$meanDiff <- meanDiff(bs, dmrs=regions, testCovariate="condition")
+
+pdf(file.path(resdir, "dmrseq.dmrs.pdf"), width=8, height=3.5)
+plotDMRs(bs, regions=regions[1:20,], testCovariate="condition")
+plotDMRs(bs, regions=tail(regions[regions$qval < fdrlevel.dmr,]), testCovariate="condition")
+dev.off()
+```
+
+Next, we'll look at the overlap of the dmrseq DMRs with the DSS DMRs provided by
+the authors.
+
+```{r, meandiff.dss, echo=FALSE}
+
+meanDiff.dss <- function(bs, dmrs, testCovariate) {
+  # convert covariates to column numbers if characters
+  if (is.character(testCovariate)) {
+    testCovariate <- which(colnames(pData(bs)) == testCovariate)
+    if (length(testCovariate) == 0) {
+      stop("testCovariate not found in pData(). ", 
+           "Please specify a valid testCovariate")
+    }
+  }
+  
+  coeff <- seq(2,(2 + length(testCovariate) - 1))
+  testCov <- pData(bs)[, testCovariate]
+  if (length(unique(testCov)) == 1) {
+    message("Warning: only one unique value of the specified ", 
+            "covariate of interest.  Assuming null comparison and ", 
+            "splitting sample group into two equal groups")
+    testCov <- rep(1, length(testCov))
+    testCov[seq_len(round(length(testCov)/2))] <- 0
+  }
+  
+  design <- model.matrix(~testCov)
+  colnames(design)[coeff] <- colnames(pData(bs))[testCovariate]
+  
+  if (length(unique(design[, coeff])) != 2) {
+    message("Not a two-group comparison. Can't compute simple mean ",
+            "methylation differences. ", 
+            "Returning beta estimates instead")
+    return(dmrs$beta)
+  } else {
+    prop.mat <- getCoverage(bs, type = "M") / 
+                            getCoverage(bs, type = "Cov")
+    levs <- unique(design[, coeff])
+    
+    ol <- as.data.frame(findOverlaps(dmrs, bs)) %>%
+      group_by(queryHits) %>% 
+      summarize(s = min(subjectHits),
+                e = max(subjectHits))
+    
+    indexRanges <- IRanges(ol$s, ol$e)
+    prop.mat.dmr <- extractROWS(prop.mat, indexRanges)
+    prop.mat1.means <- rowMeans2(prop.mat.dmr[,design[, coeff] == levs[1]],
+                                na.rm=TRUE)
+    prop.mat2.means <- rowMeans2(prop.mat.dmr[,design[, coeff] == levs[2]],
+                                na.rm=TRUE)
+    meanDiff <- IRanges::mean(IRanges::relist(prop.mat2.means - prop.mat1.means,
+                                              indexRanges), na.rm=TRUE)
+    
+    return(meanDiff)
+  }
+}
+```
+
+```{r, compare}
+dssfile <- paste0(datdir, "170506-2.txt")
+if (!file.exists(dssfile)){
+  download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/1/170506-2.txt",
+              destfile =  dssfile)
+}
+
+dmrs.dss <- fread(dssfile, header=FALSE)  #DMRs
+colnames(dmrs.dss) <- c("chr", "start", "end", "number_of_CpG_cytosines_in_region",
+                   "methylation_level_in_MCF7_control", "methylation_level_in_ZF_D3A_plus_dox",
+                   "methylation_level_in_ZF_D3A_dox_wd", "closest_gene_promoter",
+                   "distance_to_nearest_promoter", "promoter_classification",
+                   "CpGisland_classification", "genebody_classification",
+                   "enhancer_classification")
+
+dmrs.dss <- makeGRangesFromDataFrame(dmrs.dss, keep.extra.columns = TRUE)
+dmrs.dss$meanDiff <- meanDiff.dss(bs, dmrs=dmrs.dss, testCovariate="condition")
+
+ol <- findOverlaps(regions[regions$qval < fdrlevel.dmr, ], dmrs.dss)
+```
+
+It looks like `r length(unique(ol@from))` 
+(`r signif(100*(length(unique(ol@from)) / length(dmrs.dss)), 3)`%) 
+of the DSS DMRs overlap with the dmrseq DMRs (at `r fdrlevel.dmr` FDR). 
+Conversely, `r length(unique(ol@to))` 
+(`r signif(100*(length(unique(ol@to)) / sum(regions$qval < fdrlevel.dmr)), 3)`%)
+
+A couple of plots to compare the characteristics of regions found by DSS and 
+dmrseq.
+
+```{r, fig.width= 12, fig.heigh=12}
+par(mfrow=c(2,2))
+plot(density(log2(dmrs.dss$number_of_CpG_cytosines_in_region+1)),
+     main = "Smoothed density of number of CpGs",
+     xlab = "Number of CpGs per region (log2+1)")
+lines(density(log2(regions[regions$qval < fdrlevel.dmr, ]$L+1)), col="blue")
+
+plot(density(log2(width(dmrs.dss)+1)),
+     main = "Smoothed density of region width",
+     xlab = "Number of basepairs per region (log2+1)")
+lines(density(log2(width(regions[regions$qval < fdrlevel.dmr, ])+1)), col="blue")
+
+legend(11, 0.4, legend=c("DSS", "dmrseq"), col=c("black", "blue"), lty=c(1,1))
+
+plot(density((regions[regions$qval < fdrlevel.dmr, ]$L /
+                     width(regions[regions$qval < fdrlevel.dmr, ]))), 
+     col="blue",
+     main = "Smoothed density of CpG density",
+     xlab = "Number of CpGs per basepair (log2+1)")
+lines(density((dmrs.dss$number_of_CpG_cytosines_in_region/width(dmrs.dss))))
+
+plot(density(regions[regions$qval < fdrlevel.dmr, ]$meanDiff),
+     main = "Smoothed density of meanDiff",
+     xlab = "Mean proportion difference in methylation",
+     col="blue")
+lines(density(dmrs.dss$meanDiff))
+
+```
+
+# DE analysis
+
+First we need to run the differential expression analysis. 
+
+```{r, expressionEDA, fig.width=8, fig.height=4}
+exp <- fread(file.path(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt"))
+
+# There are duplicate genes -- looks like a classic excel conversion error -- remove these
+dup <- which(table(exp$gene) > 1)
+names(dup)
+exp <- exp %>% filter(!(gene %in% names(dup)))
+
+# move genes to rownames  
+rownames(exp) <- exp$gene
+exp <- as.matrix(exp %>% dplyr::select(-gene))
+allZero <- rowSums(exp==0)==ncol(exp)
+exp <- exp[!allZero,]
+
+# strings to match the two comparison samples - control and ZF + DOX
+ctrl <- "MCF7_emptyVector"
+trt <- "MCF7_ZF_DNMT3A_DOX_rep"
+
+# set up colData
+coldata <- data.frame(sample=colnames(exp)) %>%
+  mutate(condition = ifelse(grepl(ctrl, sample), "Control",
+                     ifelse(grepl(trt, sample), "Methylated", "Other"))) 
+
+dds <- DESeqDataSetFromMatrix(countData = exp,
+                              colData = coldata,
+                              design = ~ condition)
+dds <- dds[, dds$condition != "Other"]
+dds$condition <- droplevels(dds$condition)
+dds <- estimateSizeFactors(dds)
+
+# plot distribution of expression values
+exp <- data.frame(counts(dds)) %>% 
+  gather(sample, count) %>% 
+  mutate(normcount = (data.frame(counts(dds, normalize=TRUE)) %>% 
+           gather(sample, count))$count) %>%
+  mutate(condition = ifelse(grepl(ctrl, sample), "Control", "Methylated")) %>%
+  mutate(dox = ifelse(grepl("noDOX", sample), "No Dox", 
+                      ifelse(grepl("DOXremoval", sample), "Dox withdrawal", 
+                             "Dox")))
+  
+ggplot(exp, aes(x=count+1, group=sample, color=condition)) +
+  geom_density(adjust=0.75, aes(linetype=dox)) +
+  scale_x_continuous(trans="log2") +
+  theme_bw() + 
+  ggtitle("Smoothed density of raw counts")
+
+ggplot(exp, aes(x=normcount+1, group=sample, color=condition)) +
+  geom_density(adjust=0.75, aes(linetype=dox)) +
+  scale_x_continuous(trans="log2") +
+  theme_bw() + 
+  ggtitle("Smoothed density of normalized counts")
+
+# collapse over samples of the same dox/condition (don't print for now)
+p <- ggplot(exp, aes(x=count+1, group=interaction(dox, condition), color=condition)) +
+  geom_density(adjust=0.75, aes(linetype=dox)) +
+  scale_x_continuous(trans="log2") +
+  theme_bw() + 
+  ggtitle("Smoothed density of raw counts")
+
+p <- ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
+  geom_density(adjust=0.75, aes(linetype=dox)) +
+  scale_x_continuous(trans="log2") +
+  theme_bw() + 
+  ggtitle("Smoothed density of normalized counts")
+
+```
+
+There could be an effect of dox on the control cell line - the dox control group
+looks very similar to the methylated group, and the dox withdrawal group has higher 
+expression (but withdrawal and no dox groups are in opposite order).
+
+Going forward, we'll use only the no dox control versus the dox methylated group
+for the DE comparison. In addition, since we observe global shifts in the expected
+direction (i.e. lower expression for the methylated condition), we will not perform
+standard normalization.
+
+```{r, deseq}
+dds <- dds[, dds$condition == "Methylated" | 
+             (dds$condition == "Control" & grepl("noDOX", dds$sample)) ]
+sizeFactors(dds) <- 1
+dds <- DESeq(dds)
+res <- results(dds)
+
+sum(res$padj < fdrlevel.de, na.rm = TRUE)
+res <- res %>% na.omit()
+```
+
+# Reproduce figures for DSS DMRs
+
+First we'll reproduce the figures using the DMRs found using DSS (table provided
+by the authors).
+
+##  Associate DSS DMRs with genes
+
+Next we need to associate each DMR with a gene by checking overlap with promoters.
+We'll grab the promoter annotation using annotatr.
+
+```{r, annotatr}
+annot = build_annotations(genome = 'hg19', annotations = 'hg19_genes_promoters')
+
+ol <- distanceToNearest(dmrs.dss, annot)
+
+dmrs <- dmrs.dss[ol@from[mcols(ol)$distance <= 2000],]
+dmrs$gene <- annot$symbol[ol@to[mcols(ol)$distance <= 2000]]
+
+dmrs <- dmrs[!is.na(dmrs$gene),]
+```
+
+Now that we have a set of DMR-Gene associations, we'll add the the DE information 
+to the DMR data frame.
+
+```{r}
+# add DE results
+x <- match(dmrs$gene, rownames(res)) 
+dmrs <- dmrs[!is.na(x),]
+x <- x[!is.na(x)]
+res.dmrs <- res[x,]
+
+dmrs <- cbind(dmrs, res.dmrs)
+```
+
+## Figure 5A for DSS DMRs
+
+Now we create the scatterplot like Figure 5A for dmrs.
+
+```{r, dmrs-5a}
+dmrsa <- data.frame(dmrs@listData) %>% 
+  mutate(sig = padj < fdrlevel.de,
+         FC = 2^log2FoldChange,
+         delta_mC = meanDiff) %>%
+  mutate(A = 0.5*(log2(baseMean) + 
+               log2(FC*baseMean))) %>%
+  mutate(ABin = ntile(A, 9)) %>%
+  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
+  filter(delta_mC > 0)
+
+ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75, aes(color = sig)) + 
+  theme_bw() + 
+  xlab(expression(paste(Delta, "mCG in DMR"))) +
+  ylab("log2 fold change mRNA abundance") +
+  scale_color_manual(values=c("black", "red")) +
+  #geom_smooth(data=dmrsa %>% filter(sig==TRUE)) +
+  geom_smooth() +
+  labs(color="Differentially\n Expressed")  +
+  geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
+  geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
+            aes(label="SOX2"), hjust=0.5, vjust=1.25) +
+  ggtitle("DSS DMRs")
+```
+
+From this figure it is not very clear that most DE genes are down-regulated.
+There doesn't seem to be much of a trend for larger magnitude expression 
+differences with larger magnitude methylation differences.
+
+## Figure 5B for DSS DMRs
+
+First in the style of the paper:
+```{r, dmrs-5b-orig, fig.height=4, fig.width=7}
+dmrsb <- dmrsa %>% 
+  filter(delta_mC > 0.3) %>%
+  mutate(FCcat = cut(FC,
+                     breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
+  mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
+                        ifelse(FCcat == "(0.7,0.9]", "Small Decrease", "Decrease"))) %>%
+  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))))
+
+ggplot(dmrsb, aes(FCcat, fill = color)) +
+  geom_bar() + 
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") +
+  ylab("Number of genes") +
+  ggtitle("All Gene - DSS DMR Pairs") + 
+  annotate("text", x = 6, y = 650, label = paste0("n=",nrow(dmrsb))) +
+  labs(fill="Direction \nof effect")
+```
+
+How many genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(dmrsb$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsb$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased genes and `r de_up` increased genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+Next in the improved symmetrical style and separating by DE status:
+```{r,fig.height=5, fig.width=10} 
+dmrsc <- dmrsa %>% 
+  filter(delta_mC > 0.3) %>%
+  mutate(sig = padj < fdrlevel.de) %>%
+  mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
+  mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
+  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat)))) %>%
+  na.omit()
+
+ggplot(dmrsc, aes(FCcat, fill = color)) +
+  geom_bar() + 
+  facet_wrap( ~ sig) +
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Gene - DSS DMR Pairs by DE significance") +
+  labs(fill="Direction \nof effect")
+```
+
+How many DE genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(dmrsc$sig & dmrsc$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsc$sig & dmrsc$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+This shows a similar result to using the UMRs - namely that DE genes are mostly 
+downregulated when their promoter is demethylated.
+
+
+# Reproduce figures for dmrseq DMRs
+
+Here we'll reproduce the figures using the DMRs found using dmrseq.
+
+##  Associate dmrseq DMRs with genes
+
+Next we need to associate each DMR with a gene by checking overlap with promoters.
+We'll grab the promoter annotation using annotatr.
+
+```{r, annotatr-dmrseq}
+annot = build_annotations(genome = 'hg19', annotations = 'hg19_genes_promoters')
+regions.sig <- regions[regions$qval < fdrlevel.dmr,]
+
+ol <- distanceToNearest(regions.sig, annot)
+
+dmrs <- regions.sig[ol@from[mcols(ol)$distance <= 2000],]
+dmrs$gene <- annot$symbol[ol@to[mcols(ol)$distance <= 2000]]
+
+dmrs <- dmrs[!is.na(dmrs$gene),]
+```
+
+Now that we have a set of DMR-Gene associations, we'll add the the DE information 
+to the DMR data frame.
+
+```{r}
+# add DE results
+x <- match(dmrs$gene, rownames(res)) 
+dmrs <- dmrs[!is.na(x),]
+x <- x[!is.na(x)]
+res.dmrs <- res[x,]
+
+dmrs <- cbind(dmrs, res.dmrs)
+```
+
+## Figure 5A for dmrseq DMRs
+
+Now we create the scatterplot like Figure 5A for dmrs.
+
+```{r, dmrs-5a-dmrseq}
+dmrsa <- data.frame(dmrs@listData) %>% 
+  mutate(sig = padj < fdrlevel.de,
+         FC = 2^log2FoldChange,
+         delta_mC = meanDiff) %>%
+  mutate(A = 0.5*(log2(baseMean) + 
+               log2(FC*baseMean))) %>%
+  mutate(ABin = ntile(A, 9)) %>%
+  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
+  filter(delta_mC > 0)
+
+ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75, aes(color = sig)) + 
+  theme_bw() + 
+  xlab(expression(paste(Delta, "mCG in DMR"))) +
+  ylab("log2 fold change mRNA abundance") +
+  scale_color_manual(values=c("black", "red")) +
+  #geom_smooth(data=dmrsa %>% filter(sig==TRUE)) +
+  geom_smooth() +
+  labs(color="Differentially\n Expressed")  +
+  geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
+  geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
+            aes(label="SOX2"), hjust=0.5, vjust=1.25) +
+  ggtitle("dmrseq DMRs")
+```
+
+From this figure it is a little more clear that most DE genes are down-regulated.
+But there doesn't seem to be much of a trend for larger magnitude expression 
+differences with larger magnitude methylation differences.
+
+## Figure 5B for dmrseq DMRs
+
+First in the style of the paper:
+```{r, dmrs-5b-orig-dmrseq, fig.height=4, fig.width=7}
+dmrsb <- dmrsa %>% 
+  filter(delta_mC > 0.3) %>%
+  mutate(FCcat = cut(FC,
+                     breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
+  mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
+                        ifelse(FCcat == "(0.7,0.9]", "Small Decrease", "Decrease"))) %>%
+  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))))
+
+ggplot(dmrsb, aes(FCcat, fill = color)) +
+  geom_bar() + 
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") +
+  ylab("Number of genes") +
+  ggtitle("All Gene - dmrseq DMR Pairs") + 
+  annotate("text", x = 6, y = 800, label = paste0("n=",nrow(dmrsb))) +
+  labs(fill="Direction \nof effect")
+```
+
+How many genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(dmrsb$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsb$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased genes and `r de_up` increased genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+Next in the improved symmetrical style and separating by DE status:
+```{r,fig.height=5, fig.width=10} 
+dmrsc <- dmrsa %>% 
+  filter(delta_mC > 0.3) %>%
+  mutate(sig = padj < fdrlevel.de) %>%
+  mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
+  mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
+  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat)))) %>%
+  na.omit()
+
+ggplot(dmrsc, aes(FCcat, fill = color)) +
+  geom_bar() + 
+  facet_wrap( ~ sig) +
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
+  labs(fill="Direction \nof effect")
+```
+
+How many DE genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(dmrsc$sig & dmrsc$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsc$sig & dmrsc$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+This shows a similar result to using the UMRs - namely that DE genes are mostly 
+downregulated when their promoter is demethylated.
+
+# Alternate version of figures for dmrseq DMRs 
+
+Here we'll create alternate versions of these figures using region level signal
+as determined from the region level summary statistic of dmrseq. This should be
+more robust than ordering regions simply on their average methylation difference
+as was done in the paper. However, note that we cannot do this for DSS DMRS 
+or UMRs, since they do not have region-level statistics available.
+
+## Alternate Figure 5A for dmrseq DMRs
+
+Now we create the scatterplot like Figure 5A for dmrs, but replacing the x-axis 
+with the region-level test statistic instead of the methylation difference 
+estimate.
+
+```{r, dmrs-5a-dmrseq-alt}
+dmrsa <- data.frame(dmrs@listData) %>% 
+  mutate(sig = padj < fdrlevel.de,
+         FC = 2^log2FoldChange,
+         delta_mC = meanDiff) %>%
+  mutate(A = 0.5*(log2(baseMean) + 
+               log2(FC*baseMean))) %>%
+  mutate(ABin = ntile(A, 9)) %>%
+  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
+  filter(delta_mC > 0)
+
+ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75, aes(color = sig)) + 
+  theme_bw() + 
+  xlab("Region test statistic") +
+  ylab("log2 fold change mRNA abundance") +
+  scale_color_manual(values=c("black", "red")) +
+  #geom_smooth(data=dmrsa %>% filter(sig==TRUE)) +
+  geom_smooth() +
+  labs(color="Differentially\n Expressed")  +
+  geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
+  geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
+            aes(label="SOX2"), hjust=0.5, vjust=1.25) +
+  ggtitle("dmrseq DMRs")
+```
+
+From this figure it is much more clear that most DE genes are down-regulated.
+
+## Alternate versions of Figure 5B for dmrseq DMRs
+
+First in the style of the paper:
+```{r, dmrs-5b-orig-dmrseq-alt, fig.height=4, fig.width=7}
+dmrsb <- dmrsa %>% 
+  filter(stat > 12) %>%
+  mutate(FCcat = cut(FC,
+                     breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
+  mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
+                        ifelse(FCcat == "(0.7,0.9]", "Small Decrease", "Decrease"))) %>%
+  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))))
+
+ggplot(dmrsb, aes(FCcat, fill = color)) +
+  geom_bar() + 
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") +
+  ylab("Number of genes") +
+  ggtitle("All Gene - dmrseq DMR Pairs") + 
+  annotate("text", x = 6, y = 400, label = paste0("n=",nrow(dmrsb))) +
+  labs(fill="Direction \nof effect")
+```
+
+How many genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(dmrsb$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsb$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased genes and `r de_up` increased genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+Next in the improved symmetrical style and separating by DE status:
+```{r,fig.height=5, fig.width=10} 
+dmrsc <- dmrsa %>% 
+  filter(stat > 12) %>%
+  mutate(sig = padj < fdrlevel.de) %>%
+  mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
+  mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
+  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat)))) %>%
+  na.omit()
+
+ggplot(dmrsc, aes(FCcat, fill = color)) +
+  geom_bar() + 
+  facet_wrap( ~ sig) +
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
+  labs(fill="Direction \nof effect")
+```
+
+How many DE genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(dmrsc$sig & dmrsc$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsc$sig & dmrsc$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+This shows that DE genes are **overwhelmingly** 
+downregulated when their promoter is demethylated.
