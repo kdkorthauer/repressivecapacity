@@ -119,7 +119,7 @@ for (file in filePaths){
 ```
 
 Since one of the files failed download, manually download from Lister lab's
-public website (per email with Ethan Ford).
+public website (per email with Ethan Ford on 3/21/2018).
 
 ```{r, downloadFailedFile}
 if (length(corrupt) == 1){
@@ -295,9 +295,6 @@ if (!file.exists(resfile)){
   regions <- readRDS(resfile)
 }
 
-# sort on qval overall (currently sorted within chromsome)
-regions <- regions[order(regions$qval, seqnames(regions)),]
-
 sum(regions$qval < fdrlevel.dmr)
 ```
 We'll add the raw mean methylation differences to the region summaries and plot
@@ -370,7 +367,7 @@ meanDiff.dss <- function(bs, dmrs, testCovariate) {
 ```
 
 ```{r, compare}
-dssfile <- paste0(datdir, "170506-2.txt")
+dssfile <- file.path(datdir, "170506-2.txt")
 if (!file.exists(dssfile)){
   download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/1/170506-2.txt",
               destfile =  dssfile)
@@ -420,11 +417,10 @@ plot(density((regions[regions$qval < fdrlevel.dmr, ]$L /
      xlab = "Number of CpGs per basepair (log2+1)")
 lines(density((dmrs.dss$number_of_CpG_cytosines_in_region/width(dmrs.dss))))
 
-plot(density(regions[regions$qval < fdrlevel.dmr, ]$meanDiff),
+plot(density(dmrs.dss$meanDiff),
      main = "Smoothed density of meanDiff",
-     xlab = "Mean proportion difference in methylation",
-     col="blue")
-lines(density(dmrs.dss$meanDiff))
+     xlab = "Mean proportion difference in methylation")
+lines(density(regions[regions$qval < fdrlevel.dmr, ]$meanDiff),col="blue")
 
 ```
 
@@ -576,7 +572,6 @@ ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
   xlab(expression(paste(Delta, "mCG in DMR"))) +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("black", "red")) +
-  #geom_smooth(data=dmrsa %>% filter(sig==TRUE)) +
   geom_smooth() +
   labs(color="Differentially\n Expressed")  +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
@@ -626,15 +621,16 @@ Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>% 
   filter(delta_mC > 0.3) %>%
-  mutate(sig = padj < fdrlevel.de) %>%
+  mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
+                      "Not Differentially Expressed")) %>%
   mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
   mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat)))) %>%
   na.omit()
 
 ggplot(dmrsc, aes(FCcat, fill = color)) +
   geom_bar() + 
   facet_wrap( ~ sig) +
+  geom_vline(xintercept = 5.5, linetype = "dashed") +
   theme_bw() + 
   scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
   xlab("mRNA fold change") + 
@@ -697,7 +693,8 @@ Now we create the scatterplot like Figure 5A for dmrs.
 
 ```{r, dmrs-5a-dmrseq}
 dmrsa <- data.frame(dmrs@listData) %>% 
-  mutate(sig = padj < fdrlevel.de,
+  mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
+                      "Not Differentially Expressed"),
          FC = 2^log2FoldChange,
          delta_mC = meanDiff) %>%
   mutate(A = 0.5*(log2(baseMean) + 
@@ -714,7 +711,6 @@ ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
   xlab(expression(paste(Delta, "mCG in DMR"))) +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("black", "red")) +
-  #geom_smooth(data=dmrsa %>% filter(sig==TRUE)) +
   geom_smooth() +
   labs(color="Differentially\n Expressed")  +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
@@ -764,15 +760,16 @@ Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>% 
   filter(delta_mC > 0.3) %>%
-  mutate(sig = padj < fdrlevel.de) %>%
+  mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
+                      "Not Differentially Expressed")) %>%
   mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
   mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat)))) %>%
   na.omit()
 
 ggplot(dmrsc, aes(FCcat, fill = color)) +
   geom_bar() + 
   facet_wrap( ~ sig) +
+  geom_vline(xintercept = 5.5, linetype = "dashed") +
   theme_bw() + 
   scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
   xlab("mRNA fold change") + 
@@ -784,8 +781,8 @@ ggplot(dmrsc, aes(FCcat, fill = color)) +
 How many DE genes had a decrease compared to an increase overall?
 
 ```{r}
-de_dn <- sum(dmrsc$sig & dmrsc$log2FoldChange < 0, na.rm=TRUE)
-de_up <- sum(dmrsc$sig & dmrsc$log2FoldChange > 0, na.rm=TRUE)
+de_dn <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange > 0, na.rm=TRUE)
 ```
 Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
@@ -816,8 +813,7 @@ dmrsa <- data.frame(dmrs@listData) %>%
   mutate(A = 0.5*(log2(baseMean) + 
                log2(FC*baseMean))) %>%
   mutate(ABin = ntile(A, 9)) %>%
-  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
-  filter(delta_mC > 0)
+  filter(!is.na(log2FoldChange) & !is.na(sig)) 
 
 ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   geom_hline(yintercept=0, col="black") +
@@ -827,7 +823,6 @@ ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   xlab("Region test statistic") +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("black", "red")) +
-  #geom_smooth(data=dmrsa %>% filter(sig==TRUE)) +
   geom_smooth() +
   labs(color="Differentially\n Expressed")  +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
@@ -875,10 +870,10 @@ Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>% 
   filter(stat > 12) %>%
-  mutate(sig = padj < fdrlevel.de) %>%
+  mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
+                      "Not Differentially Expressed")) %>%
   mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
   mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat)))) %>%
   na.omit()
 
 ggplot(dmrsc, aes(FCcat, fill = color)) +
@@ -895,8 +890,8 @@ ggplot(dmrsc, aes(FCcat, fill = color)) +
 How many DE genes had a decrease compared to an increase overall?
 
 ```{r}
-de_dn <- sum(dmrsc$sig & dmrsc$log2FoldChange < 0, na.rm=TRUE)
-de_up <- sum(dmrsc$sig & dmrsc$log2FoldChange > 0, na.rm=TRUE)
+de_dn <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange > 0, na.rm=TRUE)
 ```
 Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
