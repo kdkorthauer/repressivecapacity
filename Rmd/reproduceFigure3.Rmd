@@ -36,6 +36,7 @@ library(annotatr)
 library(rtracklayer)
 library(BiocParallel)
 library(bsseq)
+library(cowplot)
 
 # data directory
 datdir <- "../DATA"
@@ -202,32 +203,38 @@ bfile <- file.path(datdir, "bsseq_h3k4me3.rds")
 files <- list.files(datdir, pattern = "BS.CpG.txt", full.names = TRUE)
 if (!file.exists(bfile)){
   hfiles <- files[grepl("H3K4", files)]
-  bs <- read.lister(hfiles, sampleNames = hfiles, rmZeroCov = TRUE,
+  bs.h3k4 <- read.lister(hfiles, sampleNames = hfiles, rmZeroCov = TRUE,
                     strandCollapse = TRUE, mc.cores = ncores,
                     chipBS = TRUE)
   if ("BSseq" %in% class(bs)){
-    saveRDS(bs, bfile)
+    saveRDS(bs.h3k4, bfile)
   }
 }else{
-  bs <- readRDS(bfile)
+  bs.h3k4 <- readRDS(bfile)
 }
-show(bs)
 
 # polII chip bs data
 bfile <- file.path(datdir, "bsseq_polII.rds")
 if (!file.exists(bfile)){
   pfiles <- files[grepl("PolII", files)]
   
-  bs <- read.lister(pfiles, sampleNames = hfiles, rmZeroCov = TRUE,
+  bs.pol <- read.lister(pfiles, sampleNames = pfiles, rmZeroCov = TRUE,
                     strandCollapse = TRUE, mc.cores = ncores,
                     chipBS = TRUE)
   if ("BSseq" %in% class(bs)){
-    saveRDS(bs, bfile)
+    saveRDS(bs.pol, bfile)
   }
 }else{
-  bs <- readRDS(bfile)
+  bs.pol <- readRDS(bfile)
 }
-show(bs)
+
+sampleNames(bs.h3k4) <- ifelse(grepl("noDOX", sampleNames(bs.h3k4)), 
+                               "noDOX", "DOX")
+sampleNames(bs.pol) <- ifelse(grepl("noDOX", sampleNames(bs.pol)), 
+                               "noDOX", "DOX")
+
+show(bs.h3k4)
+show(bs.pol)
 ```
 
 Finally, we'll read in the ChIP bigWig data
@@ -235,8 +242,8 @@ Finally, we'll read in the ChIP bigWig data
 ```{r, bigwig}
 bwfiles <- list.files(datdir, pattern="bigWig", full.names = TRUE)
 is.control <- grepl("noDOX", bwfiles)
-chip.dox <- import(bwfiles[!is.control])
-chip.ctrl <- import(bwfiles[is.control])
+chip.dox <- import(bwfiles[!is.control], as="Rle")
+chip.ctrl <- import(bwfiles[is.control], as="Rle")
 ```
 
 # Reproduce Figure 3C, D and E
@@ -246,6 +253,8 @@ Below is a screenshot of what this figure looks like.
 
 ![Figure 5A-B from Ford et al. (2017)](../img/fig3screenshot.png)
 
+Note that the x-axis in Figure 3C is mislabeled. The change in $\Delta$mCG is computed
+as +Dox - control (since the dox induces methylation, and most values are positive).
 This Figure is used make some pretty bold claims. For example, the manuscript states that
 
 > These data demonstrate that forced DNA methylation is not sufficient to disrupt H3K4me3 occupancy or the interaction of initiated RNA polymerase II with genomic DNA.
@@ -270,54 +279,93 @@ However, since we do not have access to the peaks called by MACS (email request 
 first author Ethan Ford on 5/2/2018), 
 we'll proceed without normalization to begin with.
 
-```{r, fig5a}
+First we need to find overlaps between the UMRs and H3K4me3 coverage tracks
+
+```{r}
+# unify seqnames (chip has MT but UMRs don't)
+chip.dox <- chip.dox[seqlevels(makeGRangesFromDataFrame(ts4))]
+chip.ctrl <- chip.ctrl[seqlevels(makeGRangesFromDataFrame(ts4))]
+
+chip <- binnedAverage(makeGRangesFromDataFrame(ts4), chip.dox, "dox")
+chip$ctrl <- binnedAverage(makeGRangesFromDataFrame(ts4), chip.ctrl, "ctrl")$ctrl
+
 ts4 <- ts4 %>% 
   mutate(sig = fdr_RNAseq < 0.05,
-         FC = `FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)`) %>%
-  mutate(A = 0.5*(log2(BaseMean_RNAseq) + 
-               log2(FC*BaseMean_RNAseq))) %>%
-  mutate(ABin = ntile(A, 9)) 
-
-ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
-  geom_hline(yintercept=0, col="black") +
-  geom_hline(yintercept=0, col="white", linetype="dashed") +
-  geom_point(size=0.5, alpha=0.75, aes(color = sig)) + 
-  theme_bw() +
-  xlab(expression(paste(Delta, "mCG in UMR"))) +
-  ylab("log2 fold change mRNA abundance") +
-  scale_color_manual(values=c("black", "red")) +
-  geom_smooth(data = ts4 %>% filter(sig==TRUE)) +
-  geom_point(data =  ts4[ts4$gene == "SOX2",], col="darkred") +
-  geom_label(data =  ts4[ts4$gene == "SOX2",], col="darkred",
-            aes(label="SOX2"), hjust=0.5, vjust=1.25) +
-  labs(color="Differentially\n Expressed") 
+         FC = `FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)`,
+         chip.dox = chip$dox,
+         chip.ctrl = chip$ctrl,
+         delta_H3K4me3 = chip$dox - chip$ctrl)
 ```
 
-The figure looks pretty similar to the one in the paper.
+Next, we construct the scatterplot.
+
+```{r, fig3c}
+p1 <- ggplot(ts4, aes(y = log2(chip.dox+1) - log2(chip.ctrl+1), x = delta_mC)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75) + 
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
+  ylab(expression(paste(Delta, "log2 H3K4me3 readcount (dox - no dox)"))) +
+  geom_smooth()
+```
+
+The figure is similar in spirit to the one in the paper, but the one in the paper
+has much more variability in the spread of the points. One other point of difference
+is that it seems they expanded the boundary of UMRs to +/- 2.5kb (but there are 
+contradictions in the description of the method, so it's hard to tell).
 
 ## Reproduce Figure 5D and E
 
 Next we try Figure 5D-E, the boxplots of methylation level in UMRs in DNA versus 
 in H3K4me3 / DNA Polymerase II ChIP-ed DNA.
 
-```{r, fig5b, fig.height=4, fig.width=7}
-ts4b <- ts4 %>% 
-  filter(delta_mC > 0.3) %>%
-  mutate(FCcat = cut(`FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)`,
-                     breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
-  mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
-                        ifelse(FCcat == "(0.7,0.9]", "Small Decrease", "Decrease"))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))))
+To do so, we need to intersect the ChIP-BS data with the UMRs. We'll also compare
+to the same overlap in the WGBS data, so we'll load that in (see the 
+`methylationCountAnalysis.Rmd` for details on how that data is downloaded and 
+processed).
 
-ggplot(ts4b, aes(FCcat, fill = color)) +
-  geom_bar() + 
-  theme_bw() + 
-  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
-  xlab("mRNA fold change") +
-  ylab("Number of genes") +
-  ggtitle("All Gene - UMR Pairs") + 
-  annotate("text", x = 6, y = 600, label = paste0("n=",nrow(ts4b))) +
-  labs(fill="Direction \nof effect")
+```{r, fig5b, fig.height=4, fig.width=7}
+# intersect the UMRs with chipbs
+int.h3k4 <- bs.h3k4[findOverlaps(bs.h3k4, makeGRangesFromDataFrame(ts4))@from,]
+int.pol <- bs.pol[findOverlaps(bs.pol, makeGRangesFromDataFrame(ts4))@from,]
+
+# compute methylation proportions
+prop <- as.data.frame(getMeth(int.h3k4, type="raw")) %>% 
+  mutate(region = findOverlaps(bs.h3k4, makeGRangesFromDataFrame(ts4))@to) %>%
+  na.omit() %>%
+  gather("Group", "Meth", 1:2) %>%
+  mutate(type = "H3K4me3") %>% 
+  group_by(region, Group, type) %>%
+  summarize(Meth = mean(Meth))
+
+prop <- bind_rows(prop, 
+  as.data.frame(getMeth(int.pol, type="raw")) %>% 
+    mutate(region = findOverlaps(bs.pol, makeGRangesFromDataFrame(ts4))@to) %>%
+    na.omit() %>%
+    gather("Group", "Meth", 1:2) %>%
+    mutate(type = "RNA Polymerase II") %>% 
+    group_by(region, Group, type) %>%
+    summarize(Meth = mean(Meth)) )
+
+# add UMR 
+prop <- bind_rows(prop,
+  ts4 %>% select(mC_MCF7_control_mC, ZF_D3A_plusDox_mC) %>%
+    gather("Group", "Meth", 1:2) %>%
+    mutate(Group = ifelse(Group == "mC_MCF7_control_mC", "noDOX", "DOX"),
+           type = "WGBS",
+           region = 1:n()) %>%
+    select(region, Group, type, Meth))
+
+# plot
+p <- ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
+  geom_boxplot() + 
+  theme_classic() + 
+  xlab("Chip-BS") +
+  ylab("Average methylation proportion")
+
+plot_grid(p1, p, ncol=1)
+
 ```
 
 The figure has some slight differences in numbers, but overall is quite close to the
