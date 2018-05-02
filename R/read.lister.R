@@ -3,7 +3,7 @@
 
 read.lister <- function (files, sampleNames, rmZeroCov = FALSE, 
                          strandCollapse = TRUE, mc.cores = 1, verbose = TRUE, 
-                         BACKEND = NULL)
+                         BACKEND = NULL, chipBS = FALSE)
 {
   if (!is.null(BACKEND) && mc.cores > 1) {
     stop("Currently, 'mc.cores' must be 1 if 'BACKEND' is not NULL")
@@ -26,7 +26,8 @@ read.lister <- function (files, sampleNames, rmZeroCov = FALSE,
     out <- read.CytosineReportRaw(thisfile = files[ii],
                                   thisSampleName = sampleNames[ii], 
                                   rmZeroCov = rmZeroCov,
-                                  BACKEND = BACKEND)
+                                  BACKEND = BACKEND,
+                                  chipBS = chipBS)
     if (strandCollapse) {
       out <- strandCollapse(out)
     }
@@ -51,21 +52,34 @@ read.lister <- function (files, sampleNames, rmZeroCov = FALSE,
 }
 
 read.CytosineReportRaw <- function (thisfile, thisSampleName, rmZeroCov, 
-                                    BACKEND = NULL)
+                                    BACKEND = NULL, chipBS = FALSE)
 {
   if (isGzipped(thisfile)) {
     stop("File needs to be unzipped and filtered for CGs before proceeding")
   }
   
   out <- fread(thisfile)
-  if (ncol(out) != 6L) {
-    stop("unknown file format")
-  }
-  gr <- GRanges(seqnames = out[[1]], 
+  
+  if (chipBS){
+    if (ncol(out) != 7L) {
+      stop("unknown file format")
+    }
+    gr <- GRanges(seqnames = out[[1]], 
+                  ranges = IRanges(start = out[[2]],width = 1), 
+                  strand = out[[4]])
+    M <- as.matrix(out[[6L]])
+    Cov <- as.matrix(out[[7L]])
+  }else{
+    if (ncol(out) != 6L) {
+      stop("unknown file format")
+    }
+    gr <- GRanges(seqnames = out[[1]], 
                 ranges = IRanges(start = out[[2]],width = 1), 
                 strand = out[[3]])
-  M <- as.matrix(out[[5L]])
-  Cov <- as.matrix(out[[6L]])
+    M <- as.matrix(out[[5L]])
+    Cov <- as.matrix(out[[6L]])
+  }
+  
   M <- realize(M, BACKEND = BACKEND)
   Cov <- realize(Cov, BACKEND = BACKEND)
   BSseq(gr = gr, sampleNames = thisSampleName, M = M, Cov = Cov,

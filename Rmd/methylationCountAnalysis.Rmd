@@ -171,7 +171,7 @@ This uses the `read.lister` function sourced in by the script in the `R` directo
 bfile <- file.path(datdir, "bsseq.rds")
 
 if (!file.exists(bfile)){
-  files <- list.files(datdir, pattern = ".CpG.txt", full.names = TRUE)
+  files <- list.files(datdir, pattern = "rep[[:digit:]].CpG.txt", full.names = TRUE)
   
   bs <- read.lister(files, sampleNames = files, rmZeroCov = TRUE,
                     strandCollapse = TRUE, mc.cores = ncores)
@@ -212,32 +212,33 @@ if(ncol(pData(bs))==0){
 
 ## Exploratory analysis
 
-Plots of coverage by sample:
+First we filter on the samples we will use for the analysis. Specifically, we'll
+keep only the control samples and the DOX-induced samples with the MCF7-ZF vector.
+
+```{r, filtsamples}
+bs <- bs[,pData(bs)$condition == "Control" | 
+          pData(bs)$dox == "DOX"]
+```
+
+Here, we'll look at weighted smoothed density plots of coverage and methylation 
+proportion. Plots of coverage by group and sample:
 
 ```{r, methplot, fig.width = 8, fig.height = 6}
 set.seed(486)
 idx <- sample(1:nrow(bs), 1e6)
 plotEmpiricalDistribution(bs[idx,], 
-                          testCovariate = "condition",
-                          type = "Cov")
-
-plotEmpiricalDistribution(bs[idx, pData(bs)$condition=="Methylated"], 
-                          testCovariate = "dox",
                           bySample = TRUE,
+                          testCovariate = "condition",
                           type = "Cov")
 ```
 
-Plots of beta values by sample:
+Plots of beta values by group and sample:
 
 ```{r, methplot2, fig.width = 8, fig.height = 6}
 plotEmpiricalDistribution(bs[idx,], 
-                          testCovariate = "condition",
-                          adj = 4)
-
-plotEmpiricalDistribution(bs[idx, pData(bs)$condition=="Methylated"], 
-                          testCovariate = "dox",
                           bySample = TRUE,
-                          adj = 4)
+                          testCovariate = "condition",
+                          adj = 3)
 ```
 
 # DMR analysis
@@ -259,15 +260,7 @@ system.time({a <- bplapply(1:16, function(x) tf())})
 
 We will use dmrseq to identify Differentially Methylated Regions (DMRs). 
 
-First we filter on the samples we will use for the analysis. Specifically, we'll
-keep only the control samples and the DOX-induced samples with the MCF7-ZF vector.
-
-```{r, filtsamples}
-bs <- bs[,pData(bs)$condition == "Control" | 
-          pData(bs)$dox == "DOX"]
-```
-
-Next we have to filter the loci by coverage (remove those with zero coverage
+First we will filter the loci by coverage (remove those with zero coverage
 in at least one condition).
 
 ```{r, filter}
