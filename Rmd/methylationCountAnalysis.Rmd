@@ -282,7 +282,7 @@ if (!file.exists(resfile)){
   regions <- dmrseq(bs, testCovariate = "condition",
                     bpSpan = 500,
                     maxGap = 500,
-                    maxPerms = 4)
+                    maxPerms = 6)
   saveRDS(regions, file=resfile)
 }else{
   regions <- readRDS(resfile)
@@ -436,7 +436,7 @@ allZero <- rowSums(exp==0)==ncol(exp)
 exp <- exp[!allZero,]
 
 # strings to match the two comparison samples - control and ZF + DOX
-ctrl <- "MCF7_emptyVector"
+ctrl <- "MCF7_emptyVector|MCF7_ZF_DNMT3A_noDOX_rep"
 trt <- "MCF7_ZF_DNMT3A_DOX_rep"
 
 # set up colData
@@ -453,7 +453,8 @@ dds <- estimateSizeFactors(dds)
 
 # plot distribution of expression values
 exp <- data.frame(counts(dds)) %>% 
-  gather(sample, count) %>% 
+  mutate(gene = rownames(dds)) %>%
+  gather(sample, count, 1:19) %>% 
   mutate(normcount = (data.frame(counts(dds, normalize=TRUE)) %>% 
            gather(sample, count))$count) %>%
   mutate(condition = ifelse(grepl(ctrl, sample), "Control", "Methylated")) %>%
@@ -462,7 +463,7 @@ exp <- data.frame(counts(dds)) %>%
                              "Dox")))
   
 ggplot(exp, aes(x=count+1, group=sample, color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
+  geom_density(adjust=0.75, lwd=0.6, aes(linetype=dox)) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of raw counts")
@@ -473,14 +474,14 @@ ggplot(exp, aes(x=normcount+1, group=sample, color=condition)) +
   theme_bw() + 
   ggtitle("Smoothed density of normalized counts")
 
-# collapse over samples of the same dox/condition (don't print for now)
-p <- ggplot(exp, aes(x=count+1, group=interaction(dox, condition), color=condition)) +
+# collapse over samples of the same dox/condition 
+ggplot(exp, aes(x=count+1, group=interaction(dox, condition), color=condition)) +
   geom_density(adjust=0.75, aes(linetype=dox)) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of raw counts")
 
-p <- ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
+ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
   geom_density(adjust=0.75, aes(linetype=dox)) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
@@ -488,19 +489,75 @@ p <- ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=con
 
 ```
 
+Since we observe global shifts in the expected
+direction (i.e. lower expression for the methylated condition), we will not perform
+standard normalization. Instead, we'll compute size factors only on genes that
+were not within 5kb of a ZF binding site. To do so, we'll use the ZF ChIP-seq binding
+site data from the Supplementary table S1.
+
+```{r, norm}
+download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/0/170506-1.txt",
+              destfile =  file.path(datdir, "170506-1.txt"))
+
+ts1 <- fread(file.path(datdir, "170506-1.txt"), header=FALSE, skip=1)  #ZF Binding sites
+colnames(ts1) <- c("chr", "start", "end", "closest_gene_promoter", 
+                   "distance_to_nearest_promoter", "promoter_classification",
+                   "CpGisland_classification", "genebody_classification",
+                   "enhancer_classification")
+norm_genes <- (ts1 %>%
+  filter(distance_to_nearest_promoter > 5000))$closest_gene_promoter
+
+exp <- exp %>% 
+  mutate(normg = ifelse(gene %in% norm_genes, "Background Gene", "ZF-bound Gene"))
+
+ggplot(exp %>% filter(dox != "Dox withdrawal"), 
+       aes(x=count+1, group=interaction(normg, condition), color=normg)) +
+  geom_density(adjust=0.75, lwd=0.6, aes(linetype=condition)) +
+  scale_x_continuous(trans="log2") +
+  theme_bw() + 
+  ggtitle("Smoothed density of raw counts") 
+
+
+```
+
+Looks like the ZF-bound genes in the Dox group had slightly shifted global expression.
+For this reason, we only compute sizefactors on the normgenes.
+
 There could be an effect of dox on the control cell line - the dox control group
 looks very similar to the methylated group, and the dox withdrawal group has higher 
 expression (but withdrawal and no dox groups are in opposite order).
 
 Going forward, we'll use only the no dox control versus the dox methylated group
-for the DE comparison. In addition, since we observe global shifts in the expected
-direction (i.e. lower expression for the methylated condition), we will not perform
-standard normalization.
+for the DE comparison. 
 
 ```{r, deseq}
 dds <- dds[, dds$condition == "Methylated" | 
              (dds$condition == "Control" & grepl("noDOX", dds$sample)) ]
-sizeFactors(dds) <- 1
+dds <- estimateSizeFactors(dds, 
+                           controlGenes = rownames(dds) %in% norm_genes)
+
+# check resulting distributions after normalization
+exp <- data.frame(counts(dds)) %>% 
+  mutate(gene = rownames(dds)) %>%
+  gather(sample, count, 1:ncol(dds)) %>% 
+  mutate(normcount = (data.frame(counts(dds, normalize=TRUE)) %>% 
+         gather(sample, count))$count) %>%
+  mutate(condition = ifelse(grepl(ctrl, sample), "Control", "Methylated")) %>%
+  mutate(dox = ifelse(grepl("noDOX", sample), "No Dox","Dox"))
+
+ggplot(exp, aes(x=normcount+1, group=sample, color=condition)) +
+  geom_density(adjust=0.75, aes(linetype=dox)) +
+  scale_x_continuous(trans="log2") +
+  theme_bw() + 
+  ggtitle("Smoothed density of normalized counts")
+
+# collapse over samples of the same dox/condition 
+ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
+  geom_density(adjust=0.75, aes(linetype=dox)) +
+  scale_x_continuous(trans="log2") +
+  theme_bw() + 
+  ggtitle("Smoothed density of normalized counts")
+
 dds <- DESeq(dds)
 res <- results(dds)
 
@@ -635,8 +692,8 @@ ggplot(dmrsc, aes(FCcat, fill = color)) +
 How many DE genes had a decrease compared to an increase overall?
 
 ```{r}
-de_dn <- sum(dmrsc$sig & dmrsc$log2FoldChange < 0, na.rm=TRUE)
-de_up <- sum(dmrsc$sig & dmrsc$log2FoldChange > 0, na.rm=TRUE)
+de_dn <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange > 0, na.rm=TRUE)
 ```
 Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
@@ -656,7 +713,6 @@ Next we need to associate each DMR with a gene by checking overlap with promoter
 We'll grab the promoter annotation using annotatr.
 
 ```{r, annotatr-dmrseq}
-annot = build_annotations(genome = 'hg19', annotations = 'hg19_genes_promoters')
 regions.sig <- regions[regions$qval < fdrlevel.dmr,]
 
 ol <- distanceToNearest(regions.sig, annot)
@@ -686,8 +742,7 @@ Now we create the scatterplot like Figure 5A for dmrs.
 
 ```{r, dmrs-5a-dmrseq}
 dmrsa <- data.frame(dmrs@listData) %>% 
-  mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
-                      "Not Differentially Expressed"),
+  mutate(sig = padj < fdrlevel.de,
          FC = 2^log2FoldChange,
          delta_mC = meanDiff) %>%
   mutate(A = 0.5*(log2(baseMean) + 
@@ -726,7 +781,9 @@ dmrsb <- dmrsa %>%
                      breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
   mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
                         ifelse(FCcat == "(0.7,0.9]", "Small Decrease", "Decrease"))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))))
+  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))),
+         sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
+                      "Not Differentially Expressed"))
 
 ggplot(dmrsb, aes(FCcat, fill = color)) +
   geom_bar() + 
@@ -831,7 +888,7 @@ From this figure it is much more clear that most DE genes are down-regulated.
 First in the style of the paper:
 ```{r, dmrs-5b-orig-dmrseq-alt, fig.height=4, fig.width=7}
 dmrsb <- dmrsa %>% 
-  filter(stat > 12) %>%
+  filter(stat > 13) %>%
   mutate(FCcat = cut(FC,
                      breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
   mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
@@ -862,7 +919,7 @@ the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds o
 Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>% 
-  filter(stat > 12) %>%
+  filter(stat > 13) %>%
   mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
                       "Not Differentially Expressed")) %>%
   mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
