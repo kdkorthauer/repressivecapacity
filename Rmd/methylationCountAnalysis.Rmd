@@ -190,7 +190,7 @@ further analyses.
 
 ```{r, meta}
 if(ncol(pData(bs))==0){
-  sampleNames(bs) <- unlist(sapply(strsplit(sampleNames(bs), "//"), 
+  sampleNames(bs) <- unlist(sapply(strsplit(sampleNames(bs), "../DATA/"), 
                                    function(x) x[[2]]))
   sampleNames(bs) <- unlist(sapply(strsplit(sampleNames(bs), ".CpG"), 
                                  function(x) x[[1]]))
@@ -200,7 +200,7 @@ if(ncol(pData(bs))==0){
                                  function(x) x[[1]]))
   
   pdat <- meta[meta$basefile %in% sampleNames(bs),] %>%
-    mutate(condition = ifelse(grepl("Vector", source_name_ch1), 
+    mutate(condition = ifelse(grepl("Vector|noDox", source_name_ch1), 
                               "Control", "Methylated"),
            dox = ifelse(grepl("noDox", source_name_ch1), "No DOX", 
                         ifelse(grepl("doxInduced", source_name_ch1), "DOX", 
