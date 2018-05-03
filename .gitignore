@@ -6,5 +6,6 @@
 *.Rbuildignore
 DATA/*
 SLURM/*
+RESULTS/*
 *.html
 *._*
