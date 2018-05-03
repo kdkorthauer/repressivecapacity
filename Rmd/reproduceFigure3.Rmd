@@ -38,10 +38,16 @@ library(BiocParallel)
 library(bsseq)
 library(cowplot)
 library(GEOquery)
+library(SRAdb)
+library(Rsubread)
+library(Rsubread)
+library(Rsamtools)
 
 # data directory
 datdir <- "../DATA"
+fqdir <- file.path(datdir, "RAW")
 dir.create(datdir, showWarnings = FALSE)
+dir.create(fqdir, showWarnings = FALSE)
 
 # rscript directory
 rdir <- "../R/"
@@ -78,7 +84,7 @@ Next we download the RNA-seq count table from GEO (accession number GSE102395)
 
 ```{r, downloadGEO}
 # expression counts
-file <- paste0(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt")
+file <- file.path(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt")
 
 if (!file.exists(file)){
   download.file(url = "ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE102nnn/GSE102395/suppl/GSE102395%5FMCF7%5FZF%5FDNMT3A%5Fcountstable%2Etxt%2Egz",
@@ -93,7 +99,7 @@ as the RNA-seq count table. We'll parse the provided `allC` files to
 extract only the cytosines at CpGs.
 
 ```{r, downloadGEO2}
-# first the ChIP-BS data for PolII and H3K4Me3
+# first the ChIP-BS data for PolII and H3K4Me3 count tables
 meta = pData(phenoData(getGEO("GSE102395")[[1]]))
 filePaths <- as.character(meta$supplementary_file_1[grepl("H3K4", meta$characteristics_ch1.2) |
                                                     grepl("polymerase", meta$characteristics_ch1.2)])
@@ -137,9 +143,93 @@ for (file in filePaths){
   }
 }
 
+# next the raw ChIP-seq data 
+meta = pData(phenoData(getGEO("GSE102395")[[1]]))
+srxs <- meta[grepl("H3K4", meta$characteristics_ch1.2) |
+             grepl("polymerase", meta$characteristics_ch1.2),]
+dataset <- ifelse(grepl("H3K4", srxs$`antibody:ch1`), "H3K4", "PolII")
+grouping <- ifelse(grepl("noDOX|noDox", srxs$source_name_ch1), "Ctrl", "Meth")
+srxs <- unlist(lapply(strsplit(as.character(srxs$relation.1), "="), 
+                      function(x) x[2]))
+
+## Get DB (might take few minutes) for querying SRRs from SRXs
+sqlfile <- file.path(datdir,
+                    paste(Sys.Date(), "SRAmetadb.sqlite.gz", sep= '.'))
+if (!file.exists(gsub(".gz", "", sqlfile))){
+  getSRAdbFile(sqlfile)
+}
+sra_con<- dbConnect(SQLite(), gsub(".gz", "", sqlfile))
+
+# fastq-dump
+all.sra <- NULL
+for (srx in srxs) {
+    sra <- dbGetQuery(sra_con, paste0("select experiment_accession, run_accession from sra where experiment_accession = '", srx, "'"))$run_accession
+  
+ if(!file.exists(file.path(fqdir, paste0(sra, ".fastq")))){
+    message("fastq-dump of ", sra)
+    code <- system(paste0("fastq-dump ", sra, " --outdir ", fqdir))
+    stopifnot(code==0L)
+  }else{
+    message("fastq-dump of ", sra, " already completed.")
+  }
+  all.sra <- c(all.sra, sra)
+}
+all.fastq <- paste0(all.sra, ".fastq")
+
+# download assembly
+assemblyfile <- file.path(fqdir, "hg19.assembly.fa")
+
+if (!file.exists(assemblyfile)){
+  if (!file.exists(paste0(assemblyfile, ".gz"))){
+  download.file(url = "ftp://ftp.ensembl.org/pub/grch37/release-92/fasta/homo_sapiens/dna/Homo_sapiens.GRCh37.dna.primary_assembly.fa.gz",
+                destfile = paste0(assemblyfile, ".gz"))
+  }
+  gunzip(filename = paste0(assemblyfile, ".gz"),
+         destname = assemblyfile)
+}
 ```
 
-# Read in data tables
+# Process ChIP-seq data
+
+We proceed with processing the ChIP-seq data. The fastq files and reference 
+assembly have been downloaded
+and now the reads need to be mapped to the reference genome in order to obtain bam files.
+We first generate an index reference genome, and then use Rsubread to perform the
+mapping. 
+
+```{r, processchip}
+# build index 
+indexfile <- file.path(fqdir, "hg19index.reads")
+if (!file.exists(indexfile)){ 
+  buildindex(basename = file.path(fqdir, "hg19index"),
+           reference = assemblyfile,
+           memory=60000)
+}
+
+# map with Rsubread
+bam.files <- paste0(dataset,"_", grouping, ".bam")
+
+align(index = file.path(fqdir), 
+      readfile1 = file.path(fqdir, all.fastq), 
+      TH1 = 2, type = 1,
+      input_format = "FASTQ", 
+      output_file = file.path(fqdir, bam.files),
+      nthreads = ncores)
+
+for (bam in bam.files) {
+    out <- suppressWarnings(sortBam(bam, "h3k9ac_temp"))
+    file.rename(out, bam)
+}
+
+```
+
+Next, we'll perform peak calling using MACS2.
+
+```{r, macs}
+
+```
+
+# Read in supplementary data tables
 
 Now we'll read in the Supplementary data tables. Table S1 contains the off-target 
 binding sites of ZF-D3A. Table S2 contains information 
@@ -193,6 +283,8 @@ ts4 <- ts4 %>%
            as.numeric(`FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)`)) %>%
   na.omit()
 ```
+
+# Read in ChIP-BS data
 
 Here we read in the ChIP-BS data, which according to GEO has the following format:
 >> For the ChIP-BS-seq data the 'allC' file format is a tab-delimited text file with the following columns: 1) chromosome, 2) position, 3) position, 4) strand, 5) context, 6) cytosine base calls, and 7) all base calls.
