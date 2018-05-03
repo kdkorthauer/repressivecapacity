@@ -40,8 +40,8 @@ library(cowplot)
 library(GEOquery)
 library(SRAdb)
 library(Rsubread)
-library(Rsubread)
 library(Rsamtools)
+library(readr)
 
 # data directory
 datdir <- "../DATA"
@@ -199,33 +199,43 @@ mapping.
 
 ```{r, processchip}
 # build index 
-indexfile <- file.path(fqdir, "hg19index.reads")
-if (!file.exists(indexfile)){ 
-  buildindex(basename = file.path(fqdir, "hg19index"),
+indexfile <- file.path(fqdir, "hg19index")
+if (!file.exists(paste0(indexfile, ".reads"))){ 
+  buildindex(basename = indexfile,
            reference = assemblyfile,
            memory=60000)
 }
 
 # map with Rsubread
 bam.files <- paste0(dataset,"_", grouping, ".bam")
+done <- list.files(fqdir, pattern="*.bam")
+if (length(done)>0){
+ done <- done[file.info(file.path(fqdir,done))$size > 0]
+ bam.files <- bam.files[!(bam.files %in% done)]
+}
 
-align(index = file.path(fqdir), 
+if(length(bam.files) > 0){
+  align(index = indexfile, 
       readfile1 = file.path(fqdir, all.fastq), 
       TH1 = 2, type = 1,
       input_format = "FASTQ", 
       output_file = file.path(fqdir, bam.files),
       nthreads = ncores)
-
-for (bam in bam.files) {
-    out <- suppressWarnings(sortBam(bam, "h3k9ac_temp"))
-    file.rename(out, bam)
 }
-
 ```
 
 Next, we'll perform peak calling using MACS2.
 
 ```{r, macs}
+bedfiles <- file.path(datdir, paste0(dataset,"_", grouping, "_peaks.xls"))
+
+for(bf in bedfiles){
+  if (!file.exists(bf)){
+    system(paste0("macs2 callpeaks -t ", gsub("_peaks.bed", ".bam", bf), 
+                  " -g 2.7e9 --outdir ", datdir, " -n ", 
+                  gsub("_peaks.xls", "", bf)))
+  }
+}
 
 ```
 
@@ -369,11 +379,72 @@ as follows:
 
 However, since we do not have access to the peaks called by MACS (email request sent to 
 first author Ethan Ford on 5/2/2018), 
-we'll proceed without normalization to begin with.
+we have processed them ourselves.
 
-First we need to find overlaps between the UMRs and H3K4me3 coverage tracks
+First we need to normalize the H3K4 data by examining total read counts in common peaks
+that correspond to lowly methylated regions in both conditions. Following
+Ford et al., we'll use the center 100 bps of common peaks. We'll annotate them with
+the average methylation level in treatment and control, and select those where both
+numbers are less than 0.20 (although it seems the authors did not distinguish 
+treatments for this calculation). Then we'll count up the number of reads in each
+of the remaining peaks. For downstream analyses, read counts are scaled by the size
+factor from this total. 
 
-```{r}
+```{r, normalizeH3K4}
+# find common peaks
+peaks <- NULL
+for (bf in bedfiles[grepl("H3K4", bedfiles)]){
+  # import peak bed files as GRanges
+  peaks <- c(peaks,
+             makeGRangesFromDataFrame(read_tsv(bf, 
+                    colnames = c("chr", "start", "end", "length",
+                                 "summit", "pileup", "foldenrichment"))))
+}
+peaks <- reduce(peaks)
+
+# Count up reads in bamfiles landing in common peaks
+# create a BamFileList object
+bamfiles <- list.files(fqdir, pattern="*.bam", full.names = TRUE)
+bamfiles <- bamfiles[file.info(bamfiles)$size > 0 & grepl("H3K4", bamfiles)]
+bfL <- BamFileList(bamfiles, index = character())
+
+# summarizeOverlaps with "union"
+totalReads <- colSums(assays(summarizeOverlaps(peaks, bfL, mode = "Union"))[[1]])
+sizeFactors <- totalReads/median(totalReads)
+  
+```
+
+Next, we need to find overlaps between the UMRs and H3K4me3 reads.
+
+```{r, intersectchip}
+rse <- summarizeOverlaps(makeGRangesFromDataFrame(ts4), bfL, mode = "Union")
+counts <- apply(assays(rse)[[1]], 1, function(x) x / sizeFactors)
+
+# add counts to UMR dataframe
+ts4 <- ts4 %>% 
+  mutate(sig = fdr_RNAseq < 0.05,
+         chip.dox = counts[,grepl("Meth", colnames(counts))],
+         chip.ctrl = counts[,grepl("Ctrl", colnames(counts))],
+         delta_H3K4me3 = chip$dox - chip$ctrl)
+```
+
+Next, we construct the scatter plot of methylation change in UMRs versus normalized
+difference in H3K4me3 ChIP-Seq normalized read counts. 
+
+```{r, fig3c}
+p1 <- ggplot(ts4, aes(y = log2(chip.dox+1) - log2(chip.ctrl+1), x = delta_mC)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75) + 
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
+  ylab(expression(paste(Delta, "log2 H3K4me3 readcount (dox - no dox)"))) +
+  geom_smooth()
+```
+
+As an alternative, we can use the bigWig coverage data to generate a similar plot.
+
+```{r, fig3c-bigwig}
 # unify seqnames (chip has MT but UMRs don't)
 chip.dox <- chip.dox[seqlevels(makeGRangesFromDataFrame(ts4))]
 chip.ctrl <- chip.ctrl[seqlevels(makeGRangesFromDataFrame(ts4))]
@@ -383,15 +454,10 @@ chip$ctrl <- binnedAverage(makeGRangesFromDataFrame(ts4), chip.ctrl, "ctrl")$ctr
 
 ts4 <- ts4 %>% 
   mutate(sig = fdr_RNAseq < 0.05,
-         FC = `FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)`,
          chip.dox = chip$dox,
          chip.ctrl = chip$ctrl,
          delta_H3K4me3 = chip$dox - chip$ctrl)
-```
 
-Next, we construct the scatterplot.
-
-```{r, fig3c}
 p1 <- ggplot(ts4, aes(y = log2(chip.dox+1) - log2(chip.ctrl+1), x = delta_mC)) +
   geom_hline(yintercept=0, col="black") +
   geom_hline(yintercept=0, col="white", linetype="dashed") +
