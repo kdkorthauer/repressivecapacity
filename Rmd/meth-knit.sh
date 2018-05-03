@@ -14,4 +14,5 @@ ulimit -u 2000
 # change filename to Rmd to be knitted. 
 # make sure ncores in Rmd matches -n batch param above
 R -e "rmarkdown::render('methylationCountAnalysis.Rmd', clean = TRUE)"
-R -e "rmarkdown::render('reproduceFigure5.Rmd', clean = TRUE)"
+#R -e "rmarkdown::render('reproduceFigure3.Rmd', clean = TRUE)"
+#R -e "rmarkdown::render('reproduceFigure5.Rmd', clean = TRUE)"

@@ -37,6 +37,7 @@ library(rtracklayer)
 library(BiocParallel)
 library(bsseq)
 library(cowplot)
+library(GEOquery)
 
 # data directory
 datdir <- "../DATA"
@@ -120,7 +121,6 @@ for (file in filePaths){
   }else{
     message(err)
     message("Skipping file ", fi, " since it is corrupt.")
-    corrupt <- c(corrupt, fi)
     file.remove(fi)
   }
 }
@@ -326,8 +326,18 @@ to the same overlap in the WGBS data, so we'll load that in (see the
 processed).
 
 ```{r, fig5b, fig.height=4, fig.width=7}
-# intersect the UMRs with chipbs
-int.h3k4 <- bs.h3k4[findOverlaps(bs.h3k4, makeGRangesFromDataFrame(ts4))@from,]
+# "peaks" -- simple cutoff on bigWig for now; TODO: use a peak caller & normalize
+peaks.dox <- import(bwfiles[!is.control])
+peaks.dox <- peaks.dox[score(peaks.dox) > 80]
+peaks.ctrl <- import(bwfiles[is.control])
+peaks.ctrl <- peaks.ctrl[score(peaks.ctrl) > 80]
+peaks.h3k4 <- intersect(peaks.dox, peaks.ctrl)
+
+# intersect the UMRs with the peaks
+h3k4.UMRs <- unique(findOverlaps(peaks.h3k4, makeGRangesFromDataFrame(ts4))@to)
+
+# intersect the peak-UMRs with chipbs
+int.h3k4 <- bs.h3k4[findOverlaps(bs.h3k4, makeGRangesFromDataFrame(ts4[h3k4.UMRs,]))@from,]
 int.pol <- bs.pol[findOverlaps(bs.pol, makeGRangesFromDataFrame(ts4))@from,]
 
 # compute methylation proportions
