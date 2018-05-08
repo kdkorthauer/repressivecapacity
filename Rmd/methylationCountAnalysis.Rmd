@@ -61,7 +61,7 @@ ncores <- 6
 register(MulticoreParam(workers=ncores))
 
 # FDR significance levels for differential expression and DMR analyses
-fdrlevel.dmr <- 0.05
+fdrlevel.dmr <- 0.10
 fdrlevel.de <- 0.05
 ```
 
@@ -212,6 +212,47 @@ if(ncol(pData(bs))==0){
 
 ## Exploratory analysis
 
+Here will look at some sample similarity metrics among the samples to verify that
+control samples are most similar to controls and ZF dox samples are more similar to 
+other ZF dox samples (this is indeed the case from the coorelation patrix and 
+clustering dendrogram below).
+
+```{r}
+cov.mat <- getCoverage(bs, type="Cov")
+filter <- pmax( 1*(rowSums2(cov.mat[,pData(bs)$condition == "Control"]) >= 5),
+                1*(rowSums2(cov.mat[,pData(bs)$condition == "Methylated"]) >= 5))
+filter <- which(filter > 0)
+bs.filt <- bs[-filter,]
+rm(cov.mat)
+
+cormat <- round(cor(as.matrix(getMeth(bs.filt, type="raw")),
+                    use = "pairwise.complete.obs", 
+                    method = "spearman"),2)
+rownames(cormat) <- colnames(cormat) <- labs <- paste0(pData(bs)$condition, "_", 
+                                               pData(bs)$dox, 
+                                               "_Sample", 1:ncol(cormat))
+cormat <- data.frame(cormat) %>%
+  mutate(Sample1 = labs) %>%
+  gather("Sample2", "Correlation", 1:ncol(cormat))
+
+cormat$Sample1 <- factor(cormat$Sample1) 
+cormat$Sample2 <- factor(cormat$Sample2)
+
+ggplot(data = cormat, aes(x=Sample1, y=Sample2, fill=Correlation)) + 
+  geom_tile() +
+  scale_fill_gradient(low="white", high="red") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+d <- hclust(dist(t(as.matrix(as.data.frame(getMeth(bs.filt, type="raw")))),
+                 method="euclidean"))
+cols = c(rep("green", 2), rep("red", 3), rep("purple", 2), "blue")
+plot(d, labels = rep("", length(labs)), xlab="")
+mtext(labs, side = 1, line = c(-1, -7, -14, -14, -19, -8, -14.5, -1), 
+      at = order(d$order),
+        col = cols, las = 2, cex = 0.9)
+rm(bs.filt)
+```
+
 First we filter on the samples we will use for the analysis. Specifically, we'll
 keep only the control samples and the DOX-induced samples with the MCF7-ZF vector.
 
@@ -240,6 +281,7 @@ plotEmpiricalDistribution(bs[idx,],
                           testCovariate = "condition",
                           adj = 3)
 ```
+
 
 # DMR analysis
 
@@ -282,7 +324,8 @@ if (!file.exists(resfile)){
   regions <- dmrseq(bs, testCovariate = "condition",
                     bpSpan = 500,
                     maxGap = 500,
-                    maxPerms = 6)
+                    maxPerms = 6,
+                    chrsPerChunk = 2)
   saveRDS(regions, file=resfile)
 }else{
   regions <- readRDS(resfile)
@@ -298,7 +341,8 @@ regions$meanDiff <- meanDiff(bs, dmrs=regions, testCovariate="condition")
 
 pdf(file.path(resdir, "dmrseq.dmrs.pdf"), width=8, height=3.5)
 plotDMRs(bs, regions=regions[1:20,], testCovariate="condition")
-plotDMRs(bs, regions=tail(regions[regions$qval < fdrlevel.dmr,]), testCovariate="condition")
+plotDMRs(bs, regions=tail(regions[regions$qval < fdrlevel.dmr,]), 
+         testCovariate="condition")
 dev.off()
 ```
 
@@ -492,7 +536,8 @@ ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=conditio
 Since we observe global shifts in the expected
 direction (i.e. lower expression for the methylated condition), we will not perform
 standard normalization. Instead, we'll compute size factors only on genes that
-were not within 5kb of a ZF binding site. To do so, we'll use the ZF ChIP-seq binding
+were at least 10kb awar from a ZF binding site or significant DMR (by dmrseq).
+To find these genes, we'll use the ZF ChIP-seq binding
 site data from the Supplementary table S1.
 
 ```{r, norm}
@@ -504,8 +549,14 @@ colnames(ts1) <- c("chr", "start", "end", "closest_gene_promoter",
                    "distance_to_nearest_promoter", "promoter_classification",
                    "CpGisland_classification", "genebody_classification",
                    "enhancer_classification")
+
+annot = build_annotations(genome = 'hg19', annotations = 'hg19_genes_promoters')
+ol <- distanceToNearest(regions[regions$qval < fdrlevel.dmr,], annot)
+dmr_genes <- annot$symbol[ol@to[mcols(ol)$distance <= 10000]]
+
 norm_genes <- (ts1 %>%
-  filter(distance_to_nearest_promoter > 5000))$closest_gene_promoter
+  filter(distance_to_nearest_promoter > 10000) %>%
+  filter(!(closest_gene_promoter%in% dmr_genes)))$closest_gene_promoter
 
 exp <- exp %>% 
   mutate(normg = ifelse(gene %in% norm_genes, "Background Gene", "ZF-bound Gene"))
@@ -516,8 +567,6 @@ ggplot(exp %>% filter(dox != "Dox withdrawal"),
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of raw counts") 
-
-
 ```
 
 Looks like the ZF-bound genes in the Dox group had slightly shifted global expression.
@@ -576,8 +625,6 @@ Next we need to associate each DMR with a gene by checking overlap with promoter
 We'll grab the promoter annotation using annotatr.
 
 ```{r, annotatr}
-annot = build_annotations(genome = 'hg19', annotations = 'hg19_genes_promoters')
-
 ol <- distanceToNearest(dmrs.dss, annot)
 
 dmrs <- dmrs.dss[ol@from[mcols(ol)$distance <= 2000],]
@@ -863,7 +910,8 @@ dmrsa <- data.frame(dmrs@listData) %>%
   mutate(A = 0.5*(log2(baseMean) + 
                log2(FC*baseMean))) %>%
   mutate(ABin = ntile(A, 9)) %>%
-  filter(!is.na(log2FoldChange) & !is.na(sig)) 
+  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
+  filter(stat < 100)
 
 ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   geom_hline(yintercept=0, col="black") +
