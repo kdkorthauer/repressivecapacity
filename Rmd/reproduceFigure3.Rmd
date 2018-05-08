@@ -40,8 +40,10 @@ library(cowplot)
 library(GEOquery)
 library(SRAdb)
 library(Rsubread)
+library(Rbowtie)
 library(Rsamtools)
 library(readr)
+library(GenomicAlignments)
 
 # data directory
 datdir <- "../DATA"
@@ -60,6 +62,12 @@ dir.create(resdir, showWarnings = FALSE)
 # parallel backend
 ncores <- 6
 register(MulticoreParam(workers=ncores))
+
+# path to where TrimGalore! tool is installed
+trimgalorepath <- "~/trim_galore_zip/trim_galore"
+
+# path to where picard-tools is installed
+picardpath <- "/n/sw/fasrcsw/apps/Core/picard/2.9.0-fasrc01"
 ```
 
 # Data download
@@ -154,7 +162,7 @@ srxs <- unlist(lapply(strsplit(as.character(srxs$relation.1), "="),
 
 ## Get DB (might take few minutes) for querying SRRs from SRXs
 sqlfile <- file.path(datdir,
-                    paste(Sys.Date(), "SRAmetadb.sqlite.gz", sep= '.'))
+                    paste("SRAmetadb.sqlite.gz", sep= '.'))
 if (!file.exists(gsub(".gz", "", sqlfile))){
   getSRAdbFile(sqlfile)
 }
@@ -175,6 +183,21 @@ for (srx in srxs) {
   all.sra <- c(all.sra, sra)
 }
 all.fastq <- paste0(all.sra, ".fastq")
+
+# fastqc
+for (fi in all.fastq){
+  if (!file.exists(file.path(fqdir, gsub(".fastq", "_fastqc.html", fi)))){
+   system(paste0("fastqc ", file.path(fqdir, fi), " -o ", fqdir))
+  }
+}
+
+# quality / adapter trimming 
+for (fi in all.fastq){
+  if (!file.exists(file.path(fqdir, gsub(".fastq", "_trimmed.fq", fi)))){
+   system(paste0(trimgalorepath, " ", file.path(fqdir, fi), " -o ",
+                 fqdir, " --fastqc"))
+  }
+}
 
 # download assembly
 assemblyfile <- file.path(fqdir, "hg19.assembly.fa")
@@ -198,7 +221,7 @@ We first generate an index reference genome, and then use Rsubread to perform th
 mapping. 
 
 ```{r, processchip}
-# build index 
+# build index for subread
 indexfile <- file.path(fqdir, "hg19index")
 if (!file.exists(paste0(indexfile, ".reads"))){ 
   buildindex(basename = indexfile,
@@ -214,14 +237,110 @@ if (length(done)>0){
  bam.files <- bam.files[!(bam.files %in% done)]
 }
 
+all.fastq <- file.path(fqdir, gsub(".fastq", "_trimmed.fq",  
+                                   paste0(all.sra, ".fastq")))
 if(length(bam.files) > 0){
   align(index = indexfile, 
-      readfile1 = file.path(fqdir, all.fastq), 
+      readfile1 = all.fastq, 
       TH1 = 2, type = 1,
       input_format = "FASTQ", 
       output_file = file.path(fqdir, bam.files),
       nthreads = ncores)
 }
+
+# build index for bowtie
+indexDir <- file.path(fqdir)
+indexFile <- "hg19index_bowtie"
+if (!file.exists(file.path(indexDir, paste0(indexFile, ".rev.1.ebwt")))){ 
+  bowtie_build(references = assemblyfile, outdir = indexDir, 
+                    prefix = indexFile, force=TRUE)
+}
+
+# align with bowtie
+all.fastq <- file.path(fqdir, gsub(".fastq", "_trimmed.fq", 
+                                   paste0(all.sra, ".fastq")))
+bam.files <- paste0(dataset,"_", grouping, "_bowtie.bam")
+
+for (j in seq_along(bam.files)){
+  bf <- bam.files[j]
+  if (!file.exists(file.path(fqdir, gsub("bam", "sam", bf)))){
+    message("Mapping ", bf, " with bowtie...")
+    bowtie(sequences = all.fastq[j], 
+       index = file.path(indexDir, "hg19index_bowtie"), 
+       outfile = file.path(fqdir, gsub(".bam", ".sam", bf)), 
+       sam = TRUE, best = TRUE, force = TRUE,
+       chunkmbs = 2000,
+       threads = ncores)
+  }else{
+    message(bf, " already mapped with bowtie.")
+  }
+    
+  if(!file.exists(file.path(fqdir, bf))){
+    message("Converting ", bf, " to bam format")
+    system(paste0("samtools view -Sb ", file.path(fqdir, gsub(".bam", ".sam", bf)),
+                  " -@ ", ncores,
+                  " > ", file.path(fqdir, bf)))
+  }else{
+    message(bf, "already converted to bam format")
+  }
+}
+
+# sort bamfiles
+bam.files <- file.path(fqdir, paste0(dataset,"_", grouping, "_bowtie.bam"))
+for (bf in bam.files){
+  if (!file.exists(gsub("bowtie.bam", "bowtie_sorted.bam", bf))){
+    message("Sorting bam file: ", bf)
+    system(paste0("samtools sort ", bf, " -@ ", ncores, " -o ", 
+                  gsub("bowtie.bam", "bowtie_sorted.bam", bf)))
+  }else{
+    message("Bam file ", bf, " already sorted.")
+  }
+}
+
+# check the proportion of 'marked' reads by picard (potential PCR duplicates)
+# these will be counted & summarized to understand mapping statistics
+bam.files <- file.path(fqdir, paste0(dataset,"_", grouping, "_bowtie_sorted.bam"))
+temp.bam <- file.path(fqdir, "chipseq_temp.bam")
+temp.file <- file.path(fqdir, "chipseq_metric.txt")
+temp.dir <- file.path(fqdir, "chipseq_working")
+dir.create(temp.dir, showWarnings = FALSE)
+for (bam in bam.files) {
+   code <- system(paste0("java -jar ", file.path(picardpath, "picard.jar"), " ",
+        sprintf("MarkDuplicates I=%s O=%s M=%s \\
+        TMP_DIR=%s AS=true REMOVE_DUPLICATES=false \\
+        VALIDATION_STRINGENCY=SILENT", bam, temp.bam,   
+        temp.file, temp.dir)))
+    stopifnot(code==0L)
+    file.rename(temp.bam, bam)
+}
+
+# create bedGraph coverage files
+#  bedtools genomecov -ibam H3K4_Ctrl.bam -bga > H3K4_Ctrl.bedGraph
+
+# diagnostics of mapping 
+bam.files <- file.path(fqdir, paste0(dataset,"_", grouping, "_bowtie_sorted.bam"))
+logfile <- file.path(fqdir, "mappingstats_bowtie.rds")
+
+if (!file.exists(logfile)){
+  diagnostics <- list()
+  for (bam in bam.files) {
+    total <- countBam(bam)$records
+    mapped <- countBam(bam, param=ScanBamParam(
+        flag=scanBamFlag(isUnmapped=FALSE)))$records
+    marked <- countBam(bam, param=ScanBamParam(
+        flag=scanBamFlag(isUnmapped=FALSE, isDuplicate=TRUE)))$records
+    diagnostics[[bam]] <- c(Total=total, Mapped=mapped, Marked=marked)
+  }
+
+  diag.stats <- data.frame(do.call(rbind, diagnostics))
+  diag.stats$Prop.mapped <- diag.stats$Mapped/diag.stats$Total*100
+  diag.stats$Prop.marked <- diag.stats$Marked/diag.stats$Mapped*100
+  
+  saveRDS(diag.stats, file=logfile)
+}else{
+  diag.stats <- readRDS(file=logfile)
+}
+diag.stats
 ```
 
 Next, we'll perform peak calling using MACS2.
@@ -231,9 +350,10 @@ bedfiles <- file.path(datdir, paste0(dataset,"_", grouping, "_peaks.xls"))
 
 for(bf in bedfiles){
   if (!file.exists(bf)){
-    system(paste0("macs2 callpeaks -t ", gsub("_peaks.bed", ".bam", bf), 
+    system(paste0("macs2 callpeak -t ", 
+                  file.path(fqdir, basename(gsub("_peaks.xls", ".bam", bf))), 
                   " -g 2.7e9 --outdir ", datdir, " -n ", 
-                  gsub("_peaks.xls", "", bf)))
+                  basename(gsub("_peaks.xls", "", bf))))
   }
 }
 
@@ -391,48 +511,122 @@ of the remaining peaks. For downstream analyses, read counts are scaled by the s
 factor from this total. 
 
 ```{r, normalizeH3K4}
-# find common peaks
-peaks <- NULL
+# read in called peaks from macs
+peaks.all <- NULL
 for (bf in bedfiles[grepl("H3K4", bedfiles)]){
   # import peak bed files as GRanges
-  peaks <- c(peaks,
-             makeGRangesFromDataFrame(read_tsv(bf, 
-                    colnames = c("chr", "start", "end", "length",
-                                 "summit", "pileup", "foldenrichment"))))
+  peaks <- read_tsv(bf, comment = "#", skip = 1, guess_max = 5e5) %>%
+                                mutate(condition = basename(bf))
+  if (length(peaks.all) > 0){
+    peaks.all <- GRangesList(peaks.all, makeGRangesFromDataFrame(peaks))
+  }else{
+    peaks.all <- makeGRangesFromDataFrame(peaks)
+  }
 }
-peaks <- reduce(peaks)
+
+# find common peaks and use intersection boundaries
+ol <- findOverlaps(peaks.all[[1]], peaks.all[[2]])
+peaks.all <- GRangesList(peaks.all[[1]][ol@from], 
+                         peaks.all[[2]][ol@to])
+peaks.common <- peaks.all[[1]]
+start(peaks.common) <- pmin(start(peaks.all[[1]]), start(peaks.all[[2]]))
+end(peaks.common) <- pmax(end(peaks.all[[1]]), end(peaks.all[[2]]))
+
+# subset on common peaks at least 5kb away from ZF binding site
+seqlevels(peaks.common) <- paste0("chr", seqlevels(peaks.common))
+seqlevels(peaks.common) <- gsub("chrGL", "GL", seqlevels(peaks.common))
+ol <- findOverlaps(peaks.common, 
+                   resize(makeGRangesFromDataFrame(ts1), 
+                         width = 5000 + width(makeGRangesFromDataFrame(ts1)), 
+                         fix = "center"))
+peaks.common <- peaks.common[-unique(ol@from),]
+
+# subset on common peaks with low methylation (< 0.2 in ctrl and dox)
+#load bsseq data (processed in MethylationCountsAnalysis.Rmd)
+bs <- readRDS(file.path(datdir, "bsseq.rds"))
+bs <- bs[,pData(bs)$dox != "Dox Withdrawal" | pData(bs)$condition == "Control"]
+
+cov.mat <- getCoverage(bs, type="Cov")
+filter <- pmax( 1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Control"]) < 5),
+                1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Methylated"]) < 5))
+filter <- which(filter > 0)
+bs <- bs[-filter,]
+rm(cov.mat)
+
+ol <- as.data.frame(findOverlaps(peaks.common, bs)) %>%
+      group_by(queryHits) %>% 
+      summarize(s = min(subjectHits),
+                e = max(subjectHits))
+indexRanges <- IRanges(ol$s, ol$e)
+prop.mat <- getCoverage(bs, type = "M")/getCoverage(bs, type = "Cov")
+prop.mat <- extractROWS(prop.mat, indexRanges)
+
+mean.ctrl <- DelayedMatrixStats::rowMeans2(prop.mat[,
+            pData(bs)$condition=="Control"], na.rm = TRUE)
+mean.meth <- DelayedMatrixStats::rowMeans2(prop.mat[,
+            pData(bs)$condition=="Methylated"], na.rm = TRUE)
+mean.ctrl <- IRanges::mean(IRanges::relist(mean.ctrl, indexRanges), na.rm = TRUE)
+mean.meth <- IRanges::mean(IRanges::relist(mean.meth, indexRanges), na.rm = TRUE)
+peaks.common <- peaks.common[which(mean.ctrl < 0.2 & mean.meth < 0.2), ]
+#peaks.common <- peaks.common[ol$queryHits[which(abs(mean.ctrl - mean.meth) < 0.2)], ]
+
+# Just use center 100bps 
+peaks.common <- resize(peaks.common, width = 100, fix = "center")
 
 # Count up reads in bamfiles landing in common peaks
 # create a BamFileList object
 bamfiles <- list.files(fqdir, pattern="*.bam", full.names = TRUE)
-bamfiles <- bamfiles[file.info(bamfiles)$size > 0 & grepl("H3K4", bamfiles)]
+bamfiles <- bamfiles[file.info(bamfiles)$size > 0 & grepl("H3K4", bamfiles) &
+                     !grepl("indel", bamfiles)]
 bfL <- BamFileList(bamfiles, index = character())
 
 # summarizeOverlaps with "union"
-totalReads <- colSums(assays(summarizeOverlaps(peaks, bfL, mode = "Union"))[[1]])
+seqlevels(peaks.common) <- gsub("chr", "", seqlevels(peaks.common))
+rse <- summarizeOverlaps(peaks.common, bfL, mode = "Union")
+totalReads <- colSums(assays(rse)$counts)
 sizeFactors <- totalReads/median(totalReads)
-  
+
 ```
 
 Next, we need to find overlaps between the UMRs and H3K4me3 reads.
 
 ```{r, intersectchip}
-rse <- summarizeOverlaps(makeGRangesFromDataFrame(ts4), bfL, mode = "Union")
-counts <- apply(assays(rse)[[1]], 1, function(x) x / sizeFactors)
+umrs <- makeGRangesFromDataFrame(ts3)
+seqlevels(umrs) <- gsub("chr", "", seqlevels(umrs))
+umrs <- resize(umrs, width = 5000, fix = "center")
+rse <- summarizeOverlaps(umrs, bfL, mode = "Union")
+assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
+                                function(x) x / sizeFactors))
 
 # add counts to UMR dataframe
-ts4 <- ts4 %>% 
-  mutate(sig = fdr_RNAseq < 0.05,
-         chip.dox = counts[,grepl("Meth", colnames(counts))],
-         chip.ctrl = counts[,grepl("Ctrl", colnames(counts))],
-         delta_H3K4me3 = chip$dox - chip$ctrl)
+ts3 <- ts3 %>% 
+  mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
+         chip.ctrl.norm = assays(rse)$normcounts[,grepl("Ctrl", colnames(rse))],
+         chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
+         chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
+         delta_H3K4me3 = chip.dox - chip.ctrl,
+         detla_H3K4me3 = chip.dox.norm - chip.ctrl.norm,
+         delta_mC = methylation_level_in_ZF_D3A_plus_dox - methylation_level_in_MCF7_control)
 ```
 
 Next, we construct the scatter plot of methylation change in UMRs versus normalized
 difference in H3K4me3 ChIP-Seq normalized read counts. 
 
 ```{r, fig3c}
-p1 <- ggplot(ts4, aes(y = log2(chip.dox+1) - log2(chip.ctrl+1), x = delta_mC)) +
+# raw read counts
+ggplot(ts3 %>% filter(delta_mC > 0), 
+             aes(y = log2(chip.dox+1) - log2(chip.ctrl+1), x = delta_mC)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75) + 
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
+  ylab(expression(paste(Delta, "log2 H3K4me3 readcount (dox - no dox)"))) +
+  geom_smooth()
+
+# normalized
+ggplot(ts3 %>% filter(delta_mC > 0), 
+             aes(y = log2(chip.dox.norm+1) - log2(chip.ctrl.norm+1), x = delta_mC)) +
   geom_hline(yintercept=0, col="black") +
   geom_hline(yintercept=0, col="white", linetype="dashed") +
   geom_point(size=0.5, alpha=0.75) + 
@@ -452,10 +646,11 @@ chip.ctrl <- chip.ctrl[seqlevels(makeGRangesFromDataFrame(ts4))]
 chip <- binnedAverage(makeGRangesFromDataFrame(ts4), chip.dox, "dox")
 chip$ctrl <- binnedAverage(makeGRangesFromDataFrame(ts4), chip.ctrl, "ctrl")$ctrl
 
-ts4 <- ts4 %>% 
+ts4 <- ts4 %>%
+  filter(delta_mC > 0) %>%
   mutate(sig = fdr_RNAseq < 0.05,
-         chip.dox = chip$dox,
-         chip.ctrl = chip$ctrl,
+         chip.dox = chip$dox/sizeFactors[2],
+         chip.ctrl = chip$ctrl/sizeFactors[1],
          delta_H3K4me3 = chip$dox - chip$ctrl)
 
 p1 <- ggplot(ts4, aes(y = log2(chip.dox+1) - log2(chip.ctrl+1), x = delta_mC)) +
