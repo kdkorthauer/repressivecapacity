@@ -388,7 +388,8 @@ meanDiff.dss <- function(bs, dmrs, testCovariate) {
       group_by(queryHits) %>% 
       summarize(s = min(subjectHits),
                 e = max(subjectHits))
-    
+    miss <- which(!((1:length(dmrs)) %in% ol$queryHits))
+
     indexRanges <- IRanges(ol$s, ol$e)
     prop.mat.dmr <- extractROWS(prop.mat, indexRanges)
     prop.mat1.means <- rowMeans2(prop.mat.dmr[,design[, coeff] == levs[1]],
@@ -397,8 +398,13 @@ meanDiff.dss <- function(bs, dmrs, testCovariate) {
                                 na.rm=TRUE)
     meanDiff <- IRanges::mean(IRanges::relist(prop.mat2.means - prop.mat1.means,
                                               indexRanges), na.rm=TRUE)
-    
-    return(meanDiff)
+    md <- rep(NA, length(dmrs))
+    if (length(miss)>0){
+      md[-miss] <- meanDiff
+      return(md)
+    }else{
+      return(meanDiff)
+    }
   }
 }
 ```
@@ -614,6 +620,171 @@ sum(res$padj < fdrlevel.de, na.rm = TRUE)
 res <- res %>% na.omit()
 ```
 
+
+# Reproduce figures for UMRs
+
+First we'll reproduce the figures using the UMRs (table provided
+by the authors).
+
+Get the UMRs
+
+```{r}
+
+umrfile <- file.path(datdir, "170506-3.txt")
+if (!file.exists(umrfile)){
+  download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/1/170506-3.txt",
+              destfile =  umrfile)
+}
+
+umrs <- fread(umrfile, header=FALSE, skip=1)  #UMRs
+colnames(umrs) <- c("chr", "start", "end", "number_of_CpG_cytosines_in_region",
+                   "methylation_level_in_MCF7_control", "methylation_level_in_ZF_D3A_plus_dox",
+                   "methylation_level_in_ZF_D3A_dox_wd", "closest_gene_promoter",
+                   "distance_to_nearest_promoter", "promoter_classification",
+                   "CpGisland_classification", "genebody_classification",
+                   "enhancer_classification")
+umrs <- umrs %>%
+  mutate(methylation_level_in_ZF_D3A_dox_wd = 
+           as.numeric(ifelse(methylation_level_in_ZF_D3A_dox_wd == "noData", NA, 
+                  methylation_level_in_ZF_D3A_dox_wd)))
+
+umrs <- makeGRangesFromDataFrame(umrs, keep.extra.columns = TRUE)
+umrs$meanDiff <- meanDiff.dss(bs, dmrs=umrs, testCovariate="condition")
+
+```
+
+##  Associate UMRs with genes
+
+Next we need to associate each DMR with a gene by checking overlap with promoters.
+We'll grab the promoter annotation using annotatr.
+
+```{r}
+ol <- distanceToNearest(umrs, annot)
+
+dmrs <- umrs[ol@from[mcols(ol)$distance <= 2000],]
+dmrs$gene <- annot$symbol[ol@to[mcols(ol)$distance <= 2000]]
+
+dmrs <- dmrs[!is.na(dmrs$gene),]
+```
+
+Now that we have a set of DMR-Gene associations, we'll add the the DE information 
+to the DMR data frame.
+
+```{r}
+# add DE results
+x <- match(dmrs$gene, rownames(res)) 
+dmrs <- dmrs[!is.na(x),]
+x <- x[!is.na(x)]
+res.dmrs <- res[x,]
+
+dmrs <- cbind(dmrs, res.dmrs)
+```
+
+## Figure 5A for UMRs
+
+Now we create the scatterplot like Figure 5A for dmrs.
+
+```{r, umrs-5a}
+dmrsa <- data.frame(dmrs@listData) %>% 
+  mutate(sig = padj < fdrlevel.de,
+         FC = 2^log2FoldChange,
+         delta_mC = meanDiff) %>%
+  mutate(A = 0.5*(log2(baseMean) + 
+               log2(FC*baseMean))) %>%
+  mutate(ABin = ntile(A, 9)) %>%
+  filter(!is.na(log2FoldChange) & !is.na(sig))
+
+ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75, aes(color = sig)) + 
+  theme_bw() + 
+  xlab(expression(paste(Delta, "mCG in DMR"))) +
+  ylab("log2 fold change mRNA abundance") +
+  scale_color_manual(values=c("black", "red")) +
+  geom_smooth() +
+  labs(color="Differentially\n Expressed")  +
+  geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
+  geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
+            aes(label="SOX2"), hjust=0.5, vjust=1.25) +
+  ggtitle("DSS DMRs") +
+  ylim(-5,6)
+```
+
+From this figure it is not very clear that most DE genes are down-regulated.
+There doesn't seem to be much of a trend for larger magnitude expression 
+differences with larger magnitude methylation differences.
+
+## Figure 5B for UMRs
+
+First in the style of the paper:
+```{r, umrs-5b-orig, fig.height=4, fig.width=7}
+dmrsb <- dmrsa %>% 
+  filter(delta_mC > 0.3) %>%
+  mutate(FCcat = cut(FC,
+                     breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
+  mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
+                        ifelse(FCcat == "(0.7,0.9]", "Small Decrease", "Decrease"))) %>%
+  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))))
+
+ggplot(dmrsb, aes(FCcat, fill = color)) +
+  geom_bar() + 
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") +
+  ylab("Number of genes") +
+  ggtitle("All Gene - DSS DMR Pairs") + 
+  annotate("text", x = 6, y = 650, label = paste0("n=",nrow(dmrsb))) +
+  labs(fill="Direction \nof effect")
+```
+
+How many genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(dmrsb$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsb$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased genes and `r de_up` increased genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+Next in the improved symmetrical style and separating by DE status:
+```{r,fig.height=5, fig.width=10} 
+dmrsc <- dmrsa %>% 
+  filter(delta_mC > 0.3) %>%
+  mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
+                      "Not Differentially Expressed")) %>%
+  mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
+  mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
+  na.omit()
+
+ggplot(dmrsc, aes(FCcat, fill = color)) +
+  geom_bar() + 
+  facet_wrap( ~ sig) +
+  geom_vline(xintercept = 5.5, linetype = "dashed") +
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Gene - DSS DMR Pairs by DE significance") +
+  labs(fill="Direction \nof effect")
+```
+
+How many DE genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+This shows a similar result to using the UMRs - namely that DE genes are mostly 
+downregulated when their promoter is demethylated.
+
+
+
 # Reproduce figures for DSS DMRs
 
 First we'll reproduce the figures using the DMRs found using DSS (table provided
@@ -658,8 +829,7 @@ dmrsa <- data.frame(dmrs@listData) %>%
   mutate(A = 0.5*(log2(baseMean) + 
                log2(FC*baseMean))) %>%
   mutate(ABin = ntile(A, 9)) %>%
-  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
-  filter(delta_mC > 0)
+  filter(!is.na(log2FoldChange) & !is.na(sig)) 
 
 ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
   geom_hline(yintercept=0, col="black") +
@@ -795,8 +965,7 @@ dmrsa <- data.frame(dmrs@listData) %>%
   mutate(A = 0.5*(log2(baseMean) + 
                log2(FC*baseMean))) %>%
   mutate(ABin = ntile(A, 9)) %>%
-  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
-  filter(delta_mC > 0)
+  filter(!is.na(log2FoldChange) & !is.na(sig)) 
 
 ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
   geom_hline(yintercept=0, col="black") +
@@ -910,23 +1079,55 @@ dmrsa <- data.frame(dmrs@listData) %>%
   mutate(A = 0.5*(log2(baseMean) + 
                log2(FC*baseMean))) %>%
   mutate(ABin = ntile(A, 9)) %>%
-  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
-  filter(stat < 100)
+  mutate(ptcol2 = ifelse(sig, "Differentially Expressed", 
+                         "Not Differentially Expressed"),
+         ptcol3 = ifelse(qval > 0.01, "Not significant (DMR)", 
+                        ifelse(sig, "DMR and DE", "Not significant (DE)"))) %>%
+  filter(!is.na(log2FoldChange) & !is.na(sig)) 
 
 ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   geom_hline(yintercept=0, col="black") +
   geom_hline(yintercept=0, col="white", linetype="dashed") +
-  geom_point(size=0.5, alpha=0.75, aes(color = sig)) + 
+  geom_point(size=0.5, alpha=0.75, aes(color = ptcol2)) + 
   theme_bw() + 
   xlab("Region test statistic") +
   ylab("log2 fold change mRNA abundance") +
-  scale_color_manual(values=c("black", "red")) +
+  scale_color_manual(values=c("red", "black")) +
   geom_smooth() +
-  labs(color="Differentially\n Expressed")  +
+  labs(color="Significance")  +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
-  ggtitle("dmrseq DMRs")
+  ggtitle("dmrseq DMRs") +
+  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+             linetype="dashed", color="grey20")
+```
+
+
+```{r, extraplots, eval=FALSE, echo=FALSE}
+
+A2 <- ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75, aes(color = ptcol3)) + 
+  theme_bw() + 
+  xlab("Region test statistic") +
+  ylab("log2 fold change mRNA abundance") +
+  scale_color_manual(values=c("red", "black", "grey")) +
+  geom_smooth() +
+  labs(color="Significance")  +
+  geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
+  geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
+            aes(label="SOX2"), hjust=0.5, vjust=1.25) +
+  ggtitle("dmrseq DMRs") +
+  ylim(-3,3) + 
+  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+             linetype="dashed", color="grey20")
+A2 
+
+# save plot for mutlipanel figure
+saveRDS(A2, file="../plots/A2.rds")
+
 ```
 
 From this figure it is much more clear that most DE genes are down-regulated.
@@ -936,7 +1137,7 @@ From this figure it is much more clear that most DE genes are down-regulated.
 First in the style of the paper:
 ```{r, dmrs-5b-orig-dmrseq-alt, fig.height=4, fig.width=7}
 dmrsb <- dmrsa %>% 
-  filter(stat > 13) %>%
+  filter(qval < 0.01) %>%
   mutate(FCcat = cut(FC,
                      breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
   mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
@@ -967,7 +1168,7 @@ the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds o
 Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>% 
-  filter(stat > 13) %>%
+  filter(qval < 0.01) %>%
   mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
                       "Not Differentially Expressed")) %>%
   mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
@@ -985,6 +1186,53 @@ ggplot(dmrsc, aes(FCcat, fill = color)) +
   labs(fill="Direction \nof effect")
 ```
 
+```{r, extraplots2, eval=FALSE, echo=FALSE}
+ggplot(dmrsc %>% filter(sig == "Differentially Expressed"), 
+             aes(FCcat, fill = color)) +
+  geom_bar() + 
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  xlab("mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
+  geom_vline(xintercept = 5.5, linetype = "dashed") +
+  labs(fill="Direction \nof effect")
+
+B2 <- ggplot(dmrsc %>% 
+               filter(sig == "Differentially Expressed"),
+             aes(x=log2FoldChange)) +
+  geom_histogram(breaks=seq(-3,3, by=1/5), 
+                 aes(fill=color)) + 
+  scale_fill_manual(values=c("red", "blue")) + 
+  theme_bw() + 
+  xlab("log2 mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
+  labs(fill="Direction \nof effect") +
+  xlim(-3,3) +
+  ylim(0,316)
+B2
+# save plot for mutlipanel figure
+saveRDS(B2, file="../plots/B2.rds")
+
+B2 <- ggplot(dmrsc %>% 
+               filter(sig == "Differentially Expressed"),
+             aes(x=log2FoldChange)) +
+  geom_histogram(breaks=seq(-3,3, by=1/5), 
+                 aes(y=..density..)) + 
+  geom_vline(xintercept = 0, color="black") +
+  geom_vline(xintercept = 0, color="white", linetype = "dashed") +
+  theme_bw() + 
+  xlab("log2 mRNA fold change") + 
+  ylab("Density") +
+  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
+  xlim(-3,3) +
+  ylim(0,1.15)
+B2
+# save plot for mutlipanel figure
+saveRDS(B2, file="../plots/B2bw.rds")
+```
+
 How many DE genes had a decrease compared to an increase overall?
 
 ```{r}
@@ -997,3 +1245,9 @@ the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds o
 
 This shows that DE genes are **overwhelmingly** 
 downregulated when their promoter is demethylated.
+
+# Session Information
+
+```{r}
+sessionInfo()
+```

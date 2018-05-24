@@ -10,3 +10,4 @@ RESULTS/*
 *.html
 *._*
 .DS_Store
+plots/*

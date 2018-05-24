@@ -62,7 +62,7 @@ Next we download the RNA-seq count table from GEO (accession number GSE102395)
 
 ```{r, downloadGEO}
 # expression counts
-file <- paste0(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt")
+file <- file.path(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt")
 
 if (!file.exists(file)){
   download.file(url = "ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE102nnn/GSE102395/suppl/GSE102395%5FMCF7%5FZF%5FDNMT3A%5Fcountstable%2Etxt%2Egz",
@@ -208,6 +208,7 @@ ts4 <- ts4 %>%
          FC = `FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)`) %>%
   mutate(A = 0.5*(log2(BaseMean_RNAseq) + 
                log2(FC*BaseMean_RNAseq))) %>%
+  mutate(big = ifelse(delta_mC > 0.3, "high", "low")) %>%
   mutate(ABin = ntile(A, 9)) 
 
 ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
@@ -217,12 +218,38 @@ ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
   theme_bw() +
   xlab(expression(paste(Delta, "mCG in UMR"))) +
   ylab("log2 fold change mRNA abundance") +
-  scale_color_manual(values=c("black", "red")) +
-  geom_smooth(data = ts4 %>% filter(sig==TRUE)) +
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "black")) +
+  geom_smooth(data = ts4) +
+  geom_vline(xintercept=0.3, linetype="dashed", color="grey20") +
   geom_point(data =  ts4[ts4$gene == "SOX2",], col="darkred") +
   geom_label(data =  ts4[ts4$gene == "SOX2",], col="darkred",
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
-  labs(color="Differentially\n Expressed") 
+  labs(color= "UMR effect size") 
+
+```
+
+```{r, extraplot2, eval=FALSE, echo = FALSE}
+A1 <- ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75, aes(color = big)) + 
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG in UMR"))) +
+  ylab("log2 fold change mRNA abundance") +
+  scale_color_manual(values = c("low" = "grey", "high" = "red"), 
+                     labels = c(expression(paste(Delta, "mCG < 0.3")),
+                                expression(paste(Delta, "mCG > 0.3")))) +
+  #geom_smooth(data = ts4) +
+  geom_vline(xintercept=0.3, linetype="dashed", color="grey20") +
+  geom_point(data =  ts4[ts4$gene == "SOX2",], col="darkred") +
+  geom_label(data =  ts4[ts4$gene == "SOX2",], col="darkred",
+            aes(label="SOX2"), hjust=0.5, vjust=1.25) +
+  labs(color= "UMR effect size") +
+  ylim(-3,3) 
+A1
+
+# save plot for mutlipanel figure
+saveRDS(A1, file="../plots/A1.rds")
 ```
 
 The figure looks pretty similar to the one in the paper.
@@ -385,17 +412,52 @@ ts4c <- ts4 %>%
   mutate(sig = fdr_RNAseq < 0.05) %>%
   mutate(color = ifelse(log2FC_RNAseq > 0, "Increase", "Decrease")) %>%
   mutate(FCcat = cut(log2FC_RNAseq, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))))
+  mutate(FCcat = factor(FCcat, levels = (levels(FCcat))))
 
 ggplot(ts4c, aes(FCcat, fill = color)) +
   geom_bar() + 
   facet_wrap( ~ sig) +
   theme_bw() + 
   scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
+  geom_vline(xintercept = 5.5, linetype = "dashed") +
   xlab("log2 mRNA fold change") + 
   ylab("Number of genes") +
   ggtitle("Gene - UMR Pairs by DE significance") +
   labs(fill="Direction \nof effect")
+```
+
+```{r, extraplots1, eval=FALSE, echo=FALSE}
+B1 <- ggplot(ts4c , #%>% filter(sig==TRUE), 
+             aes(log2FC_RNAseq, fill = color)) +
+  geom_histogram(breaks=seq(-3,3, by=1/5))+ 
+  theme_bw() + 
+  scale_fill_manual(values=c("red", "blue")) + 
+  xlab("log2 mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Gene - UMR Pairs") +
+  labs(fill="Direction \nof effect")+
+  xlim(-3,3) +
+  ylim(0,316)
+B1 
+
+# save plot for mutlipanel figure
+saveRDS(B1, file="../plots/B1.rds")
+
+B1 <- ggplot(ts4c , #%>% filter(sig==TRUE), 
+             aes(log2FC_RNAseq)) +
+  geom_histogram(breaks=seq(-3,3, by=1/5), aes(y=..density..))+ 
+  theme_bw() + 
+  geom_vline(xintercept = 0, color="black") +
+  geom_vline(xintercept = 0, color="white", linetype = "dashed") +
+  xlab("log2 mRNA fold change") + 
+  ylab("Density") +
+  ggtitle("Gene - UMR Pairs ") +
+  xlim(-3,3) +
+  ylim(0,1.15)
+B1 
+
+# save plot for mutlipanel figure
+saveRDS(B1, file="../plots/B1bw.rds")
 ```
 
 How many DE genes had a Decrease compared to an increase overall?
@@ -617,7 +679,7 @@ dmrsc <- dmrs %>%
   mutate(sig = padj < 0.01) %>%
   mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
   mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat)))) %>%
+  mutate(FCcat = factor(FCcat, levels = (levels(FCcat)))) %>%
   na.omit()
 
 ggplot(dmrsc, aes(FCcat, fill = color)) +
@@ -643,3 +705,10 @@ the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds o
 
 This shows a similar result to using the UMRs - namely that DE genes are mostly 
 downregulated when their promoter is demethylated.
+
+# Session Information
+
+```{r}
+sessionInfo()
+```
+

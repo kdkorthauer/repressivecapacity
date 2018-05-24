@@ -39,8 +39,6 @@ library(bsseq)
 library(cowplot)
 library(GEOquery)
 library(SRAdb)
-library(Rsubread)
-library(Rbowtie)
 library(Rsamtools)
 library(readr)
 library(GenomicAlignments)
@@ -48,8 +46,10 @@ library(GenomicAlignments)
 # data directory
 datdir <- "../DATA"
 fqdir <- file.path(datdir, "RAW")
+tmpdir <- file.path(fqdir, "TEMP")
 dir.create(datdir, showWarnings = FALSE)
 dir.create(fqdir, showWarnings = FALSE)
+dir.create(tmpdir, showWarnings = FALSE)
 
 # rscript directory
 rdir <- "../R/"
@@ -68,6 +68,9 @@ trimgalorepath <- "~/trim_galore_zip/trim_galore"
 
 # path to where picard-tools is installed
 picardpath <- "/n/sw/fasrcsw/apps/Core/picard/2.9.0-fasrc01"
+
+# path to where bismark is installed
+bismarkpath <- "~/bin/Bismark"
 ```
 
 # Data download
@@ -217,81 +220,64 @@ if (!file.exists(assemblyfile)){
 We proceed with processing the ChIP-seq data. The fastq files and reference 
 assembly have been downloaded
 and now the reads need to be mapped to the reference genome in order to obtain bam files.
-We first generate an index reference genome, and then use Rsubread to perform the
-mapping. 
+We first generate an index reference genome, and then use Bismark to perform the
+mapping in a bisulfite-conversion aware manner.
 
 ```{r, processchip}
-# build index for subread
-indexfile <- file.path(fqdir, "hg19index")
-if (!file.exists(paste0(indexfile, ".reads"))){ 
-  buildindex(basename = indexfile,
-           reference = assemblyfile,
-           memory=60000)
+# build index genome for bismark -- version v0.17.0
+indexDir <- file.path(fqdir, "Bisulfite_Genome")
+if (!file.exists(file.path(indexDir, "GA_conversion/BS_GA.rev.2.bt2"))){
+  system(paste0(file.path(bismarkpath, "bismark_genome_preparation"), " --bowtie2 ", fqdir ))
 }
 
-# map with Rsubread
-bam.files <- paste0(dataset,"_", grouping, ".bam")
-done <- list.files(fqdir, pattern="*.bam")
-if (length(done)>0){
- done <- done[file.info(file.path(fqdir,done))$size > 0]
- bam.files <- bam.files[!(bam.files %in% done)]
-}
-
-all.fastq <- file.path(fqdir, gsub(".fastq", "_trimmed.fq",  
-                                   paste0(all.sra, ".fastq")))
-if(length(bam.files) > 0){
-  align(index = indexfile, 
-      readfile1 = all.fastq, 
-      TH1 = 2, type = 1,
-      input_format = "FASTQ", 
-      output_file = file.path(fqdir, bam.files),
-      nthreads = ncores)
-}
-
-# build index for bowtie
-indexDir <- file.path(fqdir)
-indexFile <- "hg19index_bowtie"
-if (!file.exists(file.path(indexDir, paste0(indexFile, ".rev.1.ebwt")))){ 
-  bowtie_build(references = assemblyfile, outdir = indexDir, 
-                    prefix = indexFile, force=TRUE)
-}
-
-# align with bowtie
+bam.files <- file.path(fqdir, paste0(all.sra, "_trimmed_bismark_bt2.bam"))
 all.fastq <- file.path(fqdir, gsub(".fastq", "_trimmed.fq", 
                                    paste0(all.sra, ".fastq")))
-bam.files <- paste0(dataset,"_", grouping, "_bowtie.bam")
-
-for (j in seq_along(bam.files)){
-  bf <- bam.files[j]
-  if (!file.exists(file.path(fqdir, gsub("bam", "sam", bf)))){
-    message("Mapping ", bf, " with bowtie...")
-    bowtie(sequences = all.fastq[j], 
-       index = file.path(indexDir, "hg19index_bowtie"), 
-       outfile = file.path(fqdir, gsub(".bam", ".sam", bf)), 
-       sam = TRUE, best = TRUE, force = TRUE,
-       chunkmbs = 2000,
-       threads = ncores)
-  }else{
-    message(bf, " already mapped with bowtie.")
-  }
+for (b in seq_along(bam.files)){
+  tmpfiles <- list.files(path = tmpdir, pattern = paste0(basename(bam.files[b]), ".temp"), 
+                         full.names = TRUE)
+  tmpfiles <- c(tmpfiles, list.files(path = tmpdir, 
+                                     pattern = paste0(basename(all.fastq[b]), ".temp"),
+                                     full.names = TRUE))
+  if (!file.exists(bam.files[b]) || length(tmpfiles) > 0){
+    # cleanup
+    if (length(tmpfiles) > 0){
+      file.remove(tmpfiles)
+    }
     
-  if(!file.exists(file.path(fqdir, bf))){
-    message("Converting ", bf, " to bam format")
-    system(paste0("samtools view -Sb ", file.path(fqdir, gsub(".bam", ".sam", bf)),
-                  " -@ ", ncores,
-                  " > ", file.path(fqdir, bf)))
-  }else{
-    message(bf, "already converted to bam format")
+    if (file.exists(bam.files[b])){
+      file.remove(bam.files[b])
+    }
+    
+    # run bismark
+    system(paste0(file.path(bismarkpath, "bismark"), " --bowtie2 --multicore ",
+                  ncores, " --fastq ",
+                  "--bam -o ", fqdir, " --temp_dir ", tmpdir, " ", 
+                  fqdir, " ", all.fastq[b]))
   }
 }
 
+# don't need to extract the methylation estimates since already have them from
+# GEO, but probably will just to be consistent.
+# 
+#bismark_methylation_extractor -p --no_overlap --comprehensive --merge_non_CpG -o $OUTDIR --multicore 10 --buffer_size 20G --counts --bedGraph --gzip --cytosine_report --genome_folder $REFDIR $OUTDIR/$bamfile
+
+
+# set $covfile to be filename of bisark.cov.gz
+#covfile=$OUTDIR/$SAMPNAME\.CpG_report.txt.CpG_report.txt.gz
+
+#R CMD BATCH --no-restore --no-save /rafalab/keegan/PRCA/PROCESS/scripts/cov_to_bsseq.R $OUTDIR/$SAMPNAME\.Rout
+
+
 # sort bamfiles
-bam.files <- file.path(fqdir, paste0(dataset,"_", grouping, "_bowtie.bam"))
-for (bf in bam.files){
-  if (!file.exists(gsub("bowtie.bam", "bowtie_sorted.bam", bf))){
-    message("Sorting bam file: ", bf)
-    system(paste0("samtools sort ", bf, " -@ ", ncores, " -o ", 
-                  gsub("bowtie.bam", "bowtie_sorted.bam", bf)))
+bam.files <- file.path(fqdir, paste0(all.sra, "_trimmed_bismark_bt2.bam"))
+bam.files.sort <- file.path(fqdir, paste0(dataset,"_", grouping, 
+                                          "_trimmed_bismark_bt2_sorted.bam"))
+for (bf in seq_along(bam.files)){
+  if (!file.exists(bam.files.sort[bf])){
+    message("Sorting bam file: ", bam.files[bf])
+    system(paste0("samtools sort ", bam.files[bf], " -@ ", ncores, " -o ", 
+                  bam.files.sort[bf]))
   }else{
     message("Bam file ", bf, " already sorted.")
   }
@@ -299,12 +285,11 @@ for (bf in bam.files){
 
 # check the proportion of 'marked' reads by picard (potential PCR duplicates)
 # these will be counted & summarized to understand mapping statistics
-bam.files <- file.path(fqdir, paste0(dataset,"_", grouping, "_bowtie_sorted.bam"))
 temp.bam <- file.path(fqdir, "chipseq_temp.bam")
 temp.file <- file.path(fqdir, "chipseq_metric.txt")
 temp.dir <- file.path(fqdir, "chipseq_working")
 dir.create(temp.dir, showWarnings = FALSE)
-for (bam in bam.files) {
+for (bam in bam.files.sort) {
    code <- system(paste0("java -jar ", file.path(picardpath, "picard.jar"), " ",
         sprintf("MarkDuplicates I=%s O=%s M=%s \\
         TMP_DIR=%s AS=true REMOVE_DUPLICATES=false \\
@@ -318,12 +303,11 @@ for (bam in bam.files) {
 #  bedtools genomecov -ibam H3K4_Ctrl.bam -bga > H3K4_Ctrl.bedGraph
 
 # diagnostics of mapping 
-bam.files <- file.path(fqdir, paste0(dataset,"_", grouping, "_bowtie_sorted.bam"))
-logfile <- file.path(fqdir, "mappingstats_bowtie.rds")
+logfile <- file.path(fqdir, "mappingstats_bismark.rds")
 
 if (!file.exists(logfile)){
   diagnostics <- list()
-  for (bam in bam.files) {
+  for (bam in bam.files.sort) {
     total <- countBam(bam)$records
     mapped <- countBam(bam, param=ScanBamParam(
         flag=scanBamFlag(isUnmapped=FALSE)))$records
@@ -348,12 +332,12 @@ Next, we'll perform peak calling using MACS2.
 ```{r, macs}
 bedfiles <- file.path(datdir, paste0(dataset,"_", grouping, "_peaks.xls"))
 
-for(bf in bedfiles){
-  if (!file.exists(bf)){
+for(bf in seq_along(bedfiles)){
+  if (!file.exists(bedfiles[bf])){
     system(paste0("macs2 callpeak -t ", 
-                  file.path(fqdir, basename(gsub("_peaks.xls", ".bam", bf))), 
+                  bam.files.sort[bf], 
                   " -g 2.7e9 --outdir ", datdir, " -n ", 
-                  basename(gsub("_peaks.xls", "", bf))))
+                  basename(gsub("_peaks.xls", "", bedfiles[bf]))))
   }
 }
 
@@ -995,3 +979,10 @@ the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds o
 
 This shows a similar result to using the UMRs - namely that DE genes are mostly 
 downregulated when their promoter is demethylated.
+
+# Session Information
+
+```{r}
+sessionInfo()
+```
+
