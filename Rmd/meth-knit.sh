@@ -11,10 +11,9 @@
 export RSTUDIO_PANDOC="/n/sw/fasrcsw/apps/Core/rstudio/0.98.1103-fasrc01/bin/pandoc/"
 ulimit -u 2000 
 module load sratoolkit
-module load macs2/2.1.1.20160309-fasrc01
+module load macs2/2.1.1.20160309-fasrc02
 module load fastqc
 module load cutadapt
-module load picard
 module load jdk/1.8.0_45-fasrc01
 module load samtools
 module load bismark
