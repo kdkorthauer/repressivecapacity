@@ -2,13 +2,13 @@
 #SBATCH -J knit-lister              # A single job name for the array
 #SBATCH -n 4                        # Number of cores
 #SBATCH -N 1                        # All cores on one machine
-#SBATCH -p serial_requeue                   # Partition - shared
+#SBATCH -p irizarry                   # Partition - shared
 #SBATCH --mem 200G                  # Memory request - 125G
-#SBATCH -t 2-0:00                  # Maximum execution time (D-HH:MM)- 0-18:00
+#SBATCH -t 0-4:00                  # Maximum execution time (D-HH:MM)- 0-18:00
 #SBATCH -o ../SLURM/render-%j.out      # Standard output
 #SBATCH -e ../SLURM/render-%j.err      # Standard error
  
-export RSTUDIO_PANDOC="/n/sw/fasrcsw/apps/Core/rstudio/0.98.1103-fasrc01/bin/pandoc/"
+export RSTUDIO_PANDOC="/n/helmod/apps/centos7/Core/rstudio/1.1.453-fasrc01/bin/pandoc"
 ulimit -u 2000 
 module load sratoolkit
 module load macs2/2.1.1.20160309-fasrc02

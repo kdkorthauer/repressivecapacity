@@ -42,6 +42,9 @@ library(SRAdb)
 library(Rsamtools)
 library(readr)
 library(GenomicAlignments)
+library(dmrseq)
+library(DelayedMatrixStats)
+library(Rsubread)
 
 # data directory
 datdir <- "../DATA"
@@ -65,9 +68,6 @@ register(MulticoreParam(workers=ncores))
 
 # path to where TrimGalore! tool is installed
 trimgalorepath <- "~/trim_galore_zip/trim_galore"
-
-# path to where picard-tools is installed
-picardpath <- "/n/sw/fasrcsw/apps/Core/picard/2.9.0-fasrc01"
 
 # path to where bismark is installed
 bismarkpath <- "~/bin/Bismark"
@@ -257,17 +257,7 @@ for (b in seq_along(bam.files)){
   }
 }
 
-# don't need to extract the methylation estimates since already have them from
-# GEO, but probably will just to be consistent.
-# 
-#bismark_methylation_extractor -p --no_overlap --comprehensive --merge_non_CpG -o $OUTDIR --multicore 10 --buffer_size 20G --counts --bedGraph --gzip --cytosine_report --genome_folder $REFDIR $OUTDIR/$bamfile
-
-
-# set $covfile to be filename of bisark.cov.gz
-#covfile=$OUTDIR/$SAMPNAME\.CpG_report.txt.CpG_report.txt.gz
-
-#R CMD BATCH --no-restore --no-save /rafalab/keegan/PRCA/PROCESS/scripts/cov_to_bsseq.R $OUTDIR/$SAMPNAME\.Rout
-
+# don't need to extract the methylation estimates since already have WGBS data
 
 # sort bamfiles
 bam.files <- file.path(fqdir, paste0(all.sra, "_trimmed_bismark_bt2.bam"))
@@ -282,49 +272,6 @@ for (bf in seq_along(bam.files)){
     message("Bam file ", bf, " already sorted.")
   }
 }
-
-# check the proportion of 'marked' reads by picard (potential PCR duplicates)
-# these will be counted & summarized to understand mapping statistics
-temp.bam <- file.path(fqdir, "chipseq_temp.bam")
-temp.file <- file.path(fqdir, "chipseq_metric.txt")
-temp.dir <- file.path(fqdir, "chipseq_working")
-dir.create(temp.dir, showWarnings = FALSE)
-for (bam in bam.files.sort) {
-   code <- system(paste0("java -jar ", file.path(picardpath, "picard.jar"), " ",
-        sprintf("MarkDuplicates I=%s O=%s M=%s \\
-        TMP_DIR=%s AS=true REMOVE_DUPLICATES=false \\
-        VALIDATION_STRINGENCY=SILENT", bam, temp.bam,   
-        temp.file, temp.dir)))
-    stopifnot(code==0L)
-    file.rename(temp.bam, bam)
-}
-
-# create bedGraph coverage files
-#  bedtools genomecov -ibam H3K4_Ctrl.bam -bga > H3K4_Ctrl.bedGraph
-
-# diagnostics of mapping 
-logfile <- file.path(fqdir, "mappingstats_bismark.rds")
-
-if (!file.exists(logfile)){
-  diagnostics <- list()
-  for (bam in bam.files.sort) {
-    total <- countBam(bam)$records
-    mapped <- countBam(bam, param=ScanBamParam(
-        flag=scanBamFlag(isUnmapped=FALSE)))$records
-    marked <- countBam(bam, param=ScanBamParam(
-        flag=scanBamFlag(isUnmapped=FALSE, isDuplicate=TRUE)))$records
-    diagnostics[[bam]] <- c(Total=total, Mapped=mapped, Marked=marked)
-  }
-
-  diag.stats <- data.frame(do.call(rbind, diagnostics))
-  diag.stats$Prop.mapped <- diag.stats$Mapped/diag.stats$Total*100
-  diag.stats$Prop.marked <- diag.stats$Marked/diag.stats$Mapped*100
-  
-  saveRDS(diag.stats, file=logfile)
-}else{
-  diag.stats <- readRDS(file=logfile)
-}
-diag.stats
 ```
 
 Next, we'll perform peak calling using MACS2.
@@ -398,99 +345,31 @@ ts4 <- ts4 %>%
   na.omit()
 ```
 
-# Read in ChIP-BS data
+# Normalize ChIP-BS peaks
 
-Here we read in the ChIP-BS data, which according to GEO has the following format:
->> For the ChIP-BS-seq data the 'allC' file format is a tab-delimited text file with the following columns: 1) chromosome, 2) position, 3) position, 4) strand, 5) context, 6) cytosine base calls, and 7) all base calls.
+Before comparing read counts in ChIP-seq data, we need to normalize the samples
+for read depth. 
 
-```{r, read.lister}
-# h3k4 chip bs data
-bfile <- file.path(datdir, "bsseq_h3k4me3.rds")
-files <- list.files(datdir, pattern = "BS.CpG.txt", full.names = TRUE)
-if (!file.exists(bfile)){
-  hfiles <- files[grepl("H3K4", files)]
-  bs.h3k4 <- read.lister(hfiles, sampleNames = hfiles, rmZeroCov = TRUE,
-                    strandCollapse = TRUE, mc.cores = ncores,
-                    chipBS = TRUE)
-  if ("BSseq" %in% class(bs)){
-    saveRDS(bs.h3k4, bfile)
-  }
-}else{
-  bs.h3k4 <- readRDS(bfile)
-}
+## H3K4me3
 
-# polII chip bs data
-bfile <- file.path(datdir, "bsseq_polII.rds")
-if (!file.exists(bfile)){
-  pfiles <- files[grepl("PolII", files)]
-  
-  bs.pol <- read.lister(pfiles, sampleNames = pfiles, rmZeroCov = TRUE,
-                    strandCollapse = TRUE, mc.cores = ncores,
-                    chipBS = TRUE)
-  if ("BSseq" %in% class(bs)){
-    saveRDS(bs.pol, bfile)
-  }
-}else{
-  bs.pol <- readRDS(bfile)
-}
-
-sampleNames(bs.h3k4) <- ifelse(grepl("noDOX", sampleNames(bs.h3k4)), 
-                               "noDOX", "DOX")
-sampleNames(bs.pol) <- ifelse(grepl("noDOX", sampleNames(bs.pol)), 
-                               "noDOX", "DOX")
-
-show(bs.h3k4)
-show(bs.pol)
-```
-
-Finally, we'll read in the ChIP bigWig data
-
-```{r, bigwig}
-bwfiles <- list.files(datdir, pattern="bigWig", full.names = TRUE)
-is.control <- grepl("noDOX", bwfiles)
-chip.dox <- import(bwfiles[!is.control], as="Rle")
-chip.ctrl <- import(bwfiles[is.control], as="Rle")
-```
-
-# Reproduce Figure 3C, D and E
-
-With the tables in hand, we attempt to reproduce Figure 3 from the manuscript.
-Below is a screenshot of what this figure looks like. 
-
-![Figure 5A-B from Ford et al. (2017)](../img/fig3screenshot.png)
-
-Note that the x-axis in Figure 3C is mislabeled. The change in $\Delta$mCG is computed
-as +Dox - control (since the dox induces methylation, and most values are positive).
-This Figure is used make some pretty bold claims. For example, the manuscript states that
-
-> These data demonstrate that forced DNA methylation is not sufficient to disrupt H3K4me3 occupancy or the interaction of initiated RNA polymerase II with genomic DNA.
-
-In more detail, this statement is backed up by the following details regarding Figure 3
-
-> Notably, there is no correlation between the change in DNA methylation and the level of H3K4me3 in UMRs (Fig. 3C).
-
-> In DNA purified by H3K4me3 ChIP in ZF-D3A +dox, 21% of CpGs within the 6,392 H3K4me3 peaks were methylated, demonstrating that H3K4me3 and DNA methylation can exist simultaneously at the same site upon forced induction of DNA methylation (Fig. 3D). 
-
-> Importantly, phospho-Ser5 RNA pol II was clearly able to directly interact with ZF-D3A methylated DNA (Fig. 3E)
-
-## Reproduce Figure 3C
-
-We first start with Figure 3C, the scatterplot of methylation difference and
-difference in H3K4me3. In the manuscript, the normalization of H3K4me3 is described
+In the manuscript, the normalization of H3K4me3 ChIP-BS data is described
 as follows: 
 
-> To account for variations in ChIP efficiency, the two ChIP-seq data sets were normalized by the number of reads mapped to H3K4me3 peaks that had a ∆mCG <0.2 between ZF-D3A no-dox and ZF-D3A +dox cells.
-
-However, since we do not have access to the peaks called by MACS (email request sent to 
-first author Ethan Ford on 5/2/2018), 
-we have processed them ourselves.
+> H3K4me3 ChIP-seq data sets for ZF-D3A +dox and ZF-D3A no-dox cells were normalized by
+identifying common peaks between the two samples. Peak intervals with an average mC level
+of <0.2 were sub-selected and the number of reads mapped to ±50 bp of the peak center was            
+used as the normalization factor. Normalized mapped reads counts in H3K4me3 read ZF-D3A           
+no-dox and ZF-D3A +dox cells was measured across an interval ±2.5 kb of the center of DMRs.
+The resulting intervals with more than 2,000 reads summed from both samples (n=2,735) were   
+used to compare H3K4me3 occupancy between ZF-D3A no-dox and ZF-D3A+dox cells.
 
 First we need to normalize the H3K4 data by examining total read counts in common peaks
-that correspond to lowly methylated regions in both conditions. Following
-Ford et al., we'll use the center 100 bps of common peaks. We'll annotate them with
+that correspond to regions with methylation difference < 0.2 between conditions. 
+We'll use the intersection of common peaks (instead of just the center +/- 50 bps
+of the common peaks as done by the authors). We'll annotate them with
 the average methylation level in treatment and control, and select those where both
-numbers are less than 0.20 (although it seems the authors did not distinguish 
-treatments for this calculation). Then we'll count up the number of reads in each
+treatment and control are less than 0.2. We'll also exclude regions that overlap 
+with a ZF binding site. Then we'll count up the number of reads in each
 of the remaining peaks. For downstream analyses, read counts are scaled by the size
 factor from this total. 
 
@@ -551,46 +430,152 @@ mean.meth <- DelayedMatrixStats::rowMeans2(prop.mat[,
             pData(bs)$condition=="Methylated"], na.rm = TRUE)
 mean.ctrl <- IRanges::mean(IRanges::relist(mean.ctrl, indexRanges), na.rm = TRUE)
 mean.meth <- IRanges::mean(IRanges::relist(mean.meth, indexRanges), na.rm = TRUE)
+peaks.common <- peaks.common[ol$queryHits,] # subset on those that overlap methylation sites
 peaks.common <- peaks.common[which(mean.ctrl < 0.2 & mean.meth < 0.2), ]
-#peaks.common <- peaks.common[ol$queryHits[which(abs(mean.ctrl - mean.meth) < 0.2)], ]
-
-# Just use center 100bps 
-peaks.common <- resize(peaks.common, width = 100, fix = "center")
 
 # Count up reads in bamfiles landing in common peaks
 # create a BamFileList object
 bamfiles <- list.files(fqdir, pattern="*.bam", full.names = TRUE)
 bamfiles <- bamfiles[file.info(bamfiles)$size > 0 & grepl("H3K4", bamfiles) &
                      !grepl("indel", bamfiles)]
-bfL <- BamFileList(bamfiles, index = character())
+bfL.H3K4 <- BamFileList(bamfiles, index = character())
 
 # summarizeOverlaps with "union"
 seqlevels(peaks.common) <- gsub("chr", "", seqlevels(peaks.common))
-rse <- summarizeOverlaps(peaks.common, bfL, mode = "Union")
-totalReads <- colSums(assays(rse)$counts)
-sizeFactors <- totalReads/median(totalReads)
+rse <- summarizeOverlaps(peaks.common, bfL.H3K4, mode = "Union")
 
+totalReads <- colSums(assays(rse)$counts)
+sizeFactors.H3K4 <- totalReads/median(totalReads)
+sizeFactors.H3K4
 ```
 
-Next, we need to find overlaps between the UMRs and H3K4me3 reads.
+## RNA pol II
+
+In the manuscript, the normalization of RNA pol II ChIP-BS is not discussed. We
+will process it in the same manner as the H3k4me3 data in the previous section.
+Note that there are much fewer peaks in this data, so we'll use the intersection
+of common peaks (not restricting to the center +/- 50bps as done by the authors).
+
+```{r, normalizePolII}
+# read in called peaks from macs
+peaks.all <- NULL
+for (bf in bedfiles[grepl("PolII", bedfiles)]){
+  # import peak bed files as GRanges
+  peaks <- read_tsv(bf, comment = "#", skip = 1, guess_max = 5e5) %>%
+                                mutate(condition = basename(bf))
+  if (length(peaks.all) > 0){
+    peaks.all <- GRangesList(peaks.all, makeGRangesFromDataFrame(peaks))
+  }else{
+    peaks.all <- makeGRangesFromDataFrame(peaks)
+  }
+}
+
+# find common peaks and use intersection boundaries
+ol <- findOverlaps(peaks.all[[1]], peaks.all[[2]])
+peaks.all <- GRangesList(peaks.all[[1]][ol@from], 
+                         peaks.all[[2]][ol@to])
+peaks.common <- peaks.all[[1]]
+start(peaks.common) <- pmin(start(peaks.all[[1]]), start(peaks.all[[2]]))
+end(peaks.common) <- pmax(end(peaks.all[[1]]), end(peaks.all[[2]]))
+
+# subset on common peaks at least 5kb away from ZF binding site
+seqlevels(peaks.common) <- paste0("chr", seqlevels(peaks.common))
+seqlevels(peaks.common) <- gsub("chrGL", "GL", seqlevels(peaks.common))
+ol <- findOverlaps(peaks.common, 
+                   resize(makeGRangesFromDataFrame(ts1), 
+                         width = 5000 + width(makeGRangesFromDataFrame(ts1)), 
+                         fix = "center"))
+peaks.common <- peaks.common[-unique(ol@from),]
+
+# subset on common peaks with low methylation (< 0.2 in ctrl and dox)
+ol <- as.data.frame(findOverlaps(peaks.common, bs)) %>%
+      group_by(queryHits) %>% 
+      summarize(s = min(subjectHits),
+                e = max(subjectHits))
+indexRanges <- IRanges(ol$s, ol$e)
+prop.mat <- getCoverage(bs, type = "M")/getCoverage(bs, type = "Cov")
+prop.mat <- extractROWS(prop.mat, indexRanges)
+
+mean.ctrl <- DelayedMatrixStats::rowMeans2(prop.mat[,
+            pData(bs)$condition=="Control"], na.rm = TRUE)
+mean.meth <- DelayedMatrixStats::rowMeans2(prop.mat[,
+            pData(bs)$condition=="Methylated"], na.rm = TRUE)
+mean.ctrl <- IRanges::mean(IRanges::relist(mean.ctrl, indexRanges), na.rm = TRUE)
+mean.meth <- IRanges::mean(IRanges::relist(mean.meth, indexRanges), na.rm = TRUE)
+peaks.common <- peaks.common[ol$queryHits,] # subset on those that overlap methylation sites
+peaks.common <- peaks.common[which(mean.ctrl < 0.2 & mean.meth < 0.2), ]
+
+# Count up reads in bamfiles landing in common peaks
+# create a BamFileList object
+bamfiles <- list.files(fqdir, pattern="*.bam", full.names = TRUE)
+bamfiles <- bamfiles[file.info(bamfiles)$size > 0 & grepl("PolII", bamfiles) &
+                     !grepl("indel", bamfiles)]
+bfL.PolII <- BamFileList(bamfiles, index = character())
+
+# summarizeOverlaps with "union"
+seqlevels(peaks.common) <- gsub("chr", "", seqlevels(peaks.common))
+rse <- summarizeOverlaps(peaks.common, bfL.PolII, mode = "Union")
+
+totalReads <- colSums(assays(rse)$counts)
+sizeFactors.PolII <- totalReads/median(totalReads)
+sizeFactors.PolII
+```
+
+# Reproduce Figure 3C
+
+With the tables in hand, we attempt to reproduce Figure 3 from the manuscript.
+Below is a screenshot of what this figure looks like. 
+
+![Figure 3C from Ford et al. (2017)](../img/fig3Cscreenshot.png)
+
+Note that the x-axis in Figure 3C is mislabeled. The change in $\Delta$mCG is computed
+as +Dox - control (since the dox induces methylation, and most values are positive).
+Figure 3 is used make some pretty bold claims. For example, the manuscript states that
+
+> These data demonstrate that forced DNA methylation is not sufficient to disrupt H3K4me3 occupancy or the interaction of initiated RNA polymerase II with genomic DNA.
+
+In more detail, this statement is backed up by the following detail regarding Figure 3C
+
+> Notably, there is no correlation between the change in DNA methylation and the level of H3K4me3 in UMRs (Fig. 3C).
+
+> In DNA purified by H3K4me3 ChIP in ZF-D3A +dox, 21% of CpGs within the 6,392 H3K4me3 peaks were methylated, demonstrating that H3K4me3 and DNA methylation can exist simultaneously at the same site upon forced induction of DNA methylation (Fig. 3D). 
+
+> Importantly, phospho-Ser5 RNA pol II was clearly able to directly interact with ZF-D3A methylated DNA (Fig. 3E)
+
+## Reproduce Figure 3C for H3K4me3
+
+We first start with Figure 3C, the scatterplot of methylation difference and
+difference in H3K4me3. 
+
+First, we need to find overlaps between the UMRs and H3K4me3 reads. We also follow
+Ford et al. and expand the UMR regions to a 5kb window centered at the UMRs.
+
+They also excluded regions with less than 2000 total reads mapping. That absolute 
+cutoff removes a high proportion of the data (more than 85%); perhaps due to differences
+in mapping procedure, or how the normalization scaling was carried out. We'll use
+a cutoff of 50 total (normalized) reads
 
 ```{r, intersectchip}
 umrs <- makeGRangesFromDataFrame(ts3)
-seqlevels(umrs) <- gsub("chr", "", seqlevels(umrs))
+md <- meanDiff.dss(bs, dmrs=umrs, testCovariate="condition")
+# uniform sizes of umrs
 umrs <- resize(umrs, width = 5000, fix = "center")
-rse <- summarizeOverlaps(umrs, bfL, mode = "Union")
+seqlevels(umrs) <- gsub("chr", "", seqlevels(umrs))
+rse <- summarizeOverlaps(umrs, bfL.H3K4, mode = "Union")
 assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
-                                function(x) x / sizeFactors))
+                                function(x) x / sizeFactors.H3K4))
 
 # add counts to UMR dataframe
-ts3 <- ts3 %>% 
+ts3.h <- ts3 %>% 
   mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
          chip.ctrl.norm = assays(rse)$normcounts[,grepl("Ctrl", colnames(rse))],
          chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
          chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
-         delta_H3K4me3 = chip.dox - chip.ctrl,
-         detla_H3K4me3 = chip.dox.norm - chip.ctrl.norm,
-         delta_mC = methylation_level_in_ZF_D3A_plus_dox - methylation_level_in_MCF7_control)
+         delta_mC_orig = methylation_level_in_ZF_D3A_plus_dox - methylation_level_in_MCF7_control,
+         delta_mC = md,
+         FC = chip.dox / chip.ctrl,
+         FC.norm = chip.dox.norm / chip.ctrl.norm ) %>%
+  filter(chip.dox.norm + chip.ctrl.norm > 50)
 ```
 
 Next, we construct the scatter plot of methylation change in UMRs versus normalized
@@ -598,387 +583,667 @@ difference in H3K4me3 ChIP-Seq normalized read counts.
 
 ```{r, fig3c}
 # raw read counts
-ggplot(ts3 %>% filter(delta_mC > 0), 
-             aes(y = log2(chip.dox+1) - log2(chip.ctrl+1), x = delta_mC)) +
-  geom_hline(yintercept=0, col="black") +
-  geom_hline(yintercept=0, col="white", linetype="dashed") +
+ggplot(ts3.h %>% filter(delta_mC > 0), aes(y = FC, x = delta_mC)) +
   geom_point(size=0.5, alpha=0.75) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_y_continuous(trans="log2") +
   theme_bw() +
-  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
-  ylab(expression(paste(Delta, "log2 H3K4me3 readcount (dox - no dox)"))) +
+  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +  
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
+  ggtitle("Raw ChIP-BS read counts") +
   geom_smooth()
 
 # normalized
-ggplot(ts3 %>% filter(delta_mC > 0), 
-             aes(y = log2(chip.dox.norm+1) - log2(chip.ctrl.norm+1), x = delta_mC)) +
-  geom_hline(yintercept=0, col="black") +
-  geom_hline(yintercept=0, col="white", linetype="dashed") +
+ggplot(ts3.h %>% filter(delta_mC > 0), aes(y = FC.norm, x = delta_mC)) +
   geom_point(size=0.5, alpha=0.75) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_y_continuous(trans="log2") +
   theme_bw() +
   xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
-  ylab(expression(paste(Delta, "log2 H3K4me3 readcount (dox - no dox)"))) +
-  geom_smooth()
-```
-
-As an alternative, we can use the bigWig coverage data to generate a similar plot.
-
-```{r, fig3c-bigwig}
-# unify seqnames (chip has MT but UMRs don't)
-chip.dox <- chip.dox[seqlevels(makeGRangesFromDataFrame(ts4))]
-chip.ctrl <- chip.ctrl[seqlevels(makeGRangesFromDataFrame(ts4))]
-
-chip <- binnedAverage(makeGRangesFromDataFrame(ts4), chip.dox, "dox")
-chip$ctrl <- binnedAverage(makeGRangesFromDataFrame(ts4), chip.ctrl, "ctrl")$ctrl
-
-ts4 <- ts4 %>%
-  filter(delta_mC > 0) %>%
-  mutate(sig = fdr_RNAseq < 0.05,
-         chip.dox = chip$dox/sizeFactors[2],
-         chip.ctrl = chip$ctrl/sizeFactors[1],
-         delta_H3K4me3 = chip$dox - chip$ctrl)
-
-p1 <- ggplot(ts4, aes(y = log2(chip.dox+1) - log2(chip.ctrl+1), x = delta_mC)) +
-  geom_hline(yintercept=0, col="black") +
-  geom_hline(yintercept=0, col="white", linetype="dashed") +
-  geom_point(size=0.5, alpha=0.75) + 
-  theme_bw() +
-  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
-  ylab(expression(paste(Delta, "log2 H3K4me3 readcount (dox - no dox)"))) +
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
+  ggtitle("Normalized ChIP-BS read counts") +
   geom_smooth()
 ```
 
 The figure is similar in spirit to the one in the paper, but the one in the paper
-has much more variability in the spread of the points. One other point of difference
-is that it seems they expanded the boundary of UMRs to +/- 2.5kb (but there are 
-contradictions in the description of the method, so it's hard to tell).
+has much more variability in the spread of the points (here we are plotting the 
+log2 ratio on the y-axis instead of the absolute difference). The downward trend 
+in H3K4me3 decrease for higher values of methylation increase is much more apparent
+in this this plot.
 
-## Reproduce Figure 5D and E
+## Create Figure 3C for RNA PolII 
+
+This figure was not included in the paper, but we'll look at it here.
+
+First, we need to find overlaps between the UMRs and H3K4me3 reads. In the paper,
+they used a 5kb window centered at the UMRs, but that seems to dilute the signal
+so we won't do that. 
+
+Since the average read counts in these regions are much lower than for the 
+H3KM4 data, we will use a lower threshold for the total number of reads across
+dox and control (50 instead of 500).
+
+```{r, intersectchip-polII}
+umrs <- makeGRangesFromDataFrame(ts3)
+# uniform sizes of umrs
+umrs <- resize(umrs, width = 5000, fix = "center")
+seqlevels(umrs) <- gsub("chr", "", seqlevels(umrs))
+rse <- summarizeOverlaps(umrs, bfL.PolII, mode = "Union")
+assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
+                                function(x) x / sizeFactors.PolII))
+
+# add counts to UMR dataframe
+ts3.p <- ts3 %>% 
+  mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
+         chip.ctrl.norm = assays(rse)$normcounts[,grepl("Ctrl", colnames(rse))],
+         chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
+         chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
+         delta_mC = methylation_level_in_ZF_D3A_plus_dox - methylation_level_in_MCF7_control,
+         FC.norm = chip.dox.norm / chip.ctrl.norm,
+         FC = chip.dox / chip.ctrl) %>%
+  filter(chip.dox.norm + chip.ctrl.norm > 10)
+```
+
+Next, we construct the scatter plot of methylation change in UMRs versus normalized
+difference in H3K4me3 ChIP-Seq normalized read counts. 
+
+```{r, fig3c-pollII}
+# raw read counts
+ggplot(ts3.p %>% filter(delta_mC > 0), 
+       aes(y = FC, x = delta_mC)) +
+  geom_point(size=0.5, alpha=0.75) + 
+  scale_y_continuous(trans="log2") +
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
+  ylab("RNA PolII readcount Fold Change (dox/no dox)") +
+  ggtitle("Raw ChIP-BS read counts") +
+  geom_smooth()
+
+# normalized
+ggplot(ts3.p %>% filter(delta_mC > 0), 
+       aes(y = FC.norm, x = delta_mC)) +
+  geom_point(size=0.5, alpha=0.75) + 
+  scale_y_continuous(trans="log2") +
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
+  ylab("RNA PolII readcount Fold Change (dox/no dox)") +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth() 
+```
+
+# Figure 3C for DMRs instead of UMRs
+
+We also wish to redo Fig 3 with DMRs from dmrseq, instead of UMRs as done in the paper.
+
+## Reproduce Figure 3C for H3K4me3 data
+
+We first start with Figure 3C, the scatterplot of methylation difference and
+difference in H3K4me3. 
+
+First, we need to find overlaps between the dmrseq DMRs and H3K4me3 reads.
+The DMRs were prepared in the `methylationCountAnalysis.Rmd` analysis.
+
+```{r, intersectchip-dmrs}
+dmrs <- (dmrs <- readRDS(file.path(resdir, "regions.rds")))[dmrs$qval < 0.10, ]
+
+bs <- (bs<- readRDS(file.path(datdir, "bsseq.rds")))[,pData(bs)$condition == "Control" | 
+          pData(bs)$dox == "DOX"]
+cov.mat <- getCoverage(bs, type="Cov")
+filter <- pmax( 1*(rowSums2(cov.mat[,pData(bs)$condition == "Control"]) == 0),
+                1*(rowSums2(cov.mat[,pData(bs)$condition == "Methylated"]) == 0))
+filter <- which(filter > 0)
+bs <- bs[-filter,]
+rm(cov.mat)
+dmrs$meanDiff <- meanDiff(bs, dmrs=dmrs, testCovariate="condition")
+seqlevels(dmrs) <- gsub("chr", "", seqlevels(dmrs))
+
+# uniform sizes of dmrs
+dmrs <- resize(dmrs, width = 5000, fix = "center")
+rse <- summarizeOverlaps(dmrs, bfL.H3K4, mode = "Union")
+assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
+                                function(x) x / sizeFactors.H3K4))
+
+# add counts to dmr dataframe
+dmrs.chip <- data.frame(dmrs) %>%
+  mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
+         chip.ctrl.norm = assays(rse)$normcounts[,grepl("Ctrl", colnames(rse))],
+         chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
+         chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
+         FC = chip.dox / chip.ctrl,
+         FC.norm = chip.dox.norm / chip.ctrl.norm) %>%
+  filter(chip.dox.norm + chip.ctrl.norm > 50)
+```
+
+Next, we construct the scatter plot of methylation change in UMRs versus normalized
+difference in H3K4me3 ChIP-Seq normalized read counts. 
+
+```{r, fig3c-dmrs}
+# normalized
+ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+       aes(y = FC.norm, x = meanDiff)) +
+  geom_point(size=0.5, alpha=0.75) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG in dmrseq DMR (dox - no dox)"))) +
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth()
+```
+
+Now we'll make a similar plot, but with the DMR significance on the x-axis instead
+of methylation difference effect size.
+
+```{r, fig3c-dmrs-stat}
+# normalized
+ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+       aes(y = FC.norm, x = stat)) +
+  geom_point(size=0.5, alpha=0.75, aes(color = qval < 0.01)) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_colour_manual(values = c("grey", "black")) + 
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab("dmrseq statistic") +  
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth() + 
+  theme(legend.position = "none")
+```
+
+## Remake Figure 3C for DNA PolII data
+
+First, we need to find overlaps between the dmrseq DMRs and DNA PolII reads.
+The DMRs were prepared in the `methylationCountAnalysis.Rmd` analysis.
+
+```{r, intersectchip-dmrs-pol2}
+rse <- summarizeOverlaps(dmrs, bfL.PolII, mode = "Union")
+assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
+                                function(x) x / sizeFactors.PolII))
+
+# add counts to dmr dataframe
+dmrs.chip <- data.frame(dmrs) %>%
+  mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
+         chip.ctrl.norm = assays(rse)$normcounts[,grepl("Ctrl", colnames(rse))],
+         chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
+         chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
+         FC = chip.dox / chip.ctrl,
+         FC.norm = chip.dox.norm / chip.ctrl.norm) %>%
+  filter(chip.dox.norm + chip.ctrl.norm > 10)
+```
+
+Next, we construct the scatter plot of methylation change in UMRs versus normalized
+difference in RNA PolII ChIP-Seq normalized read counts. 
+
+```{r, fig3c-dmrs-pol2}
+# normalized
+ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+       aes(y = FC.norm, x = meanDiff)) +
+  geom_point(size=0.5, alpha=0.75) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_y_continuous(trans = "log2") +
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG in dmrseq DMR (dox - no dox)"))) +
+  ylab(expression(paste(Delta, "log2 FC RNA PolII readcount (dox/no dox)"))) +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth()
+```
+
+Now we'll make a similar plot, but with the DMR significance on the x-axis instead
+of methylation difference effect size.
+
+```{r, fig3c-dmrs-stat-pol2}
+# normalized
+ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+       aes(y = FC.norm, x = stat)) +
+  geom_point(size=0.5, alpha=0.75, aes(color = qval < 0.01)) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_y_continuous(trans = "log2") +
+  scale_colour_manual(values = c("grey", "black")) + 
+  theme_bw() +
+  xlab("dmrseq statistic") +
+  ylab(expression(paste(Delta, "log2 FC RNA PolII readcount (dox/no dox)"))) +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth() + 
+  theme(legend.position = "none")
+```
+
+# Reproduce Figure 5D and E
 
 Next we try Figure 5D-E, the boxplots of methylation level in UMRs in DNA versus 
 in H3K4me3 / DNA Polymerase II ChIP-ed DNA.
 
-To do so, we need to intersect the ChIP-BS data with the UMRs. We'll also compare
-to the same overlap in the WGBS data, so we'll load that in (see the 
-`methylationCountAnalysis.Rmd` for details on how that data is downloaded and 
-processed).
+![Figure 3D-E from Ford et al. (2017)](../img/fig3DEscreenshot.png)
 
-```{r, fig5b, fig.height=4, fig.width=7}
-# "peaks" -- simple cutoff on bigWig for now; TODO: use a peak caller & normalize
-peaks.dox <- import(bwfiles[!is.control])
-peaks.dox <- peaks.dox[score(peaks.dox) > 80]
-peaks.ctrl <- import(bwfiles[is.control])
-peaks.ctrl <- peaks.ctrl[score(peaks.ctrl) > 80]
-peaks.h3k4 <- intersect(peaks.dox, peaks.ctrl)
+In more detail, Figure 3D and E are used to support the following claims:
+
+> In DNA purified by H3K4me3 ChIP in ZF-D3A +dox, 21% of CpGs within the 6,392 H3K4me3 peaks were methylated, demonstrating that H3K4me3 and DNA methylation can exist simultaneously at the same site upon forced induction of DNA methylation (Fig. 3D). 
+
+> Importantly, phospho-Ser5 RNA pol II was clearly able to directly interact with ZF-D3A methylated DNA (Fig. 3E)
+
+To construct these figures, we need to intersect the ChIP-BS data with the UMRs. 
+For now, we'll
+use the methylation measurements from WGBS data (even though using the ChIP-BS
+data would be more direct, this should still show a signal). See the 
+`methylationCountAnalysis.Rmd` for details on how the WGBS data is downloaded and 
+processed.
+
+Here we are interested in merged peaks between control and dox (using peak 
+intersections) that also intersect with a UMR with >0.2 methylation 
+change.
+
+## Read in ChIP-BS data
+
+Here we read in the ChIP-BS data, which according to GEO has the following format:
+>> For the ChIP-BS-seq data the 'allC' file format is a tab-delimited text file with the following columns: 1) chromosome, 2) position, 3) position, 4) strand, 5) context, 6) cytosine base calls, and 7) all base calls.
+
+```{r, read.lister}
+# h3k4 chip bs data
+bfile <- file.path(datdir, "bsseq_h3k4me3.rds")
+files <- list.files(datdir, pattern = "BS.CpG.txt", full.names = TRUE)
+if (!file.exists(bfile)){
+  hfiles <- files[grepl("H3K4", files)]
+  bs.h3k4 <- read.lister(hfiles, sampleNames = hfiles, rmZeroCov = TRUE,
+                    strandCollapse = TRUE, mc.cores = ncores,
+                    chipBS = TRUE)
+  if ("BSseq" %in% class(bs)){
+    saveRDS(bs.h3k4, bfile)
+  }
+}else{
+  bs.h3k4 <- readRDS(bfile)
+}
+
+# polII chip bs data
+bfile <- file.path(datdir, "bsseq_polII.rds")
+if (!file.exists(bfile)){
+  pfiles <- files[grepl("PolII", files)]
+  
+  bs.pol <- read.lister(pfiles, sampleNames = pfiles, rmZeroCov = TRUE,
+                    strandCollapse = TRUE, mc.cores = ncores,
+                    chipBS = TRUE)
+  if ("BSseq" %in% class(bs)){
+    saveRDS(bs.pol, bfile)
+  }
+}else{
+  bs.pol <- readRDS(bfile)
+}
+
+sampleNames(bs.h3k4) <- ifelse(grepl("noDOX", sampleNames(bs.h3k4)), 
+                               "noDOX", "DOX")
+sampleNames(bs.pol) <- ifelse(grepl("noDOX", sampleNames(bs.pol)), 
+                               "noDOX", "DOX")
+sampleNames(bs) <- pData(bs)$basefile
+
+show(bs.h3k4)
+show(bs.pol)
+```
+
+## Figure 3D (H3K4me3)
+
+First we'll make the plot comparing average methylation values in H3K4me3 peaks
+that overlap a UMR.
+
+```{r, fig5b, fig.height=4, fig.width=7, eval = FALSE}
+# read in called peaks from macs
+peaks.all <- NULL
+for (bf in bedfiles[grepl("H3K4", bedfiles)]){
+  # import peak bed files as GRanges
+  peaks <- read_tsv(bf, comment = "#", skip = 1, guess_max = 5e5) %>%
+                                mutate(condition = basename(bf))
+  if (length(peaks.all) > 0){
+    peaks.all <- GRangesList(peaks.all, makeGRangesFromDataFrame(peaks))
+  }else{
+    peaks.all <- makeGRangesFromDataFrame(peaks)
+  }
+}
+
+# find common peaks and use outer boundaries
+ol <- findOverlaps(peaks.all[[1]], peaks.all[[2]])
+peaks.all <- GRangesList(peaks.all[[1]][ol@from], 
+                         peaks.all[[2]][ol@to])
+peaks.common <- peaks.all[[1]]
+start(peaks.common) <- pmax(start(peaks.all[[1]]), start(peaks.all[[2]]))
+end(peaks.common) <- pmin(end(peaks.all[[1]]), end(peaks.all[[2]]))
 
 # intersect the UMRs with the peaks
-h3k4.UMRs <- unique(findOverlaps(peaks.h3k4, makeGRangesFromDataFrame(ts4))@to)
+seqlevels(peaks.common) <- paste0("chr", seqlevels(peaks.common))
+ol <- findOverlaps(peaks.common, makeGRangesFromDataFrame(ts3))
+int <- peaks.common[unique(ol@from), ]
 
 # intersect the peak-UMRs with chipbs
-int.h3k4 <- bs.h3k4[findOverlaps(bs.h3k4, makeGRangesFromDataFrame(ts4[h3k4.UMRs,]))@from,]
-int.pol <- bs.pol[findOverlaps(bs.pol, makeGRangesFromDataFrame(ts4))@from,]
+int.chip <- bs.h3k4[findOverlaps(bs.h3k4, int)@from, ]
+int.chip <- int.chip[findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@from, ]
+int.wgbs <- bs[findOverlaps(bs, int)@from, ]
+int.wgbs <- int.wgbs[findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@from, ]
+
+# filter both by min coverage of 5 in each condition
+cov.mat <- getCoverage(int.chip, type="Cov")
+filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
+filter <- which(filter)
+int.chip <- int.chip[-filter,]
+
+cov.mat <- getCoverage(int.wgbs, type="Cov")
+filter <- pmax( 1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Control"]) < 10),
+                1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Methylated"]) < 10))
+filter <- which(filter > 0)
+int.wgbs <- int.wgbs[-filter,]
+rm(cov.mat)
 
 # compute methylation proportions
-prop <- as.data.frame(getMeth(int.h3k4, type="raw")) %>% 
-  mutate(region = findOverlaps(bs.h3k4, makeGRangesFromDataFrame(ts4))@to) %>%
-  na.omit() %>%
+prop1 <- as.data.frame(getMeth(int.chip, type="raw")) %>% 
+  mutate(region = findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@to) %>%
   gather("Group", "Meth", 1:2) %>%
-  mutate(type = "H3K4me3") %>% 
+  mutate(type = "ChIP-purified") %>% 
   group_by(region, Group, type) %>%
-  summarize(Meth = mean(Meth))
-
-prop <- bind_rows(prop, 
-  as.data.frame(getMeth(int.pol, type="raw")) %>% 
-    mutate(region = findOverlaps(bs.pol, makeGRangesFromDataFrame(ts4))@to) %>%
-    na.omit() %>%
-    gather("Group", "Meth", 1:2) %>%
-    mutate(type = "RNA Polymerase II") %>% 
+  summarize(Meth = mean(Meth, na.rm = TRUE))
+  
+prop2 <-  (as.data.frame(getMeth(int.wgbs, type="raw")) %>% 
+    mutate(region = findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@to) %>%
+    gather("Sample", "Meth", 1:6) %>%
+    mutate(Group = ifelse(grepl("Vector", Sample) | grepl("noDox", Sample),
+                          "noDOX", "DOX"),
+           type = "WGBS")) %>% 
     group_by(region, Group, type) %>%
-    summarize(Meth = mean(Meth)) )
+    summarize(Meth = mean(Meth, na.rm = TRUE))
 
-# add UMR 
-prop <- bind_rows(prop,
-  ts4 %>% select(mC_MCF7_control_mC, ZF_D3A_plusDox_mC) %>%
-    gather("Group", "Meth", 1:2) %>%
-    mutate(Group = ifelse(Group == "mC_MCF7_control_mC", "noDOX", "DOX"),
-           type = "WGBS",
-           region = 1:n()) %>%
-    select(region, Group, type, Meth))
+prop <- bind_rows(prop1, prop2)
+
+prop$Group <- as.factor(prop$Group)
+prop$type <- as.factor(prop$type)
+prop$Group <- factor(prop$Group, levels(prop$Group)[c(2,1)])
+prop$type <- factor(prop$type, levels(prop$type)[c(2,1)])
 
 # plot
-p <- ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
-  geom_boxplot() + 
+ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
+  scale_fill_manual(values = c("red", "blue")) +
+  geom_boxplot(outlier.shape=NA) + 
   theme_classic() + 
-  xlab("Chip-BS") +
-  ylab("Average methylation proportion")
-
-plot_grid(p1, p, ncol=1)
-
+  xlab("Experiment type") +
+  ylab("Average methylation proportion") +
+  ggtitle("UMR : H3K4me3 Peak intersections")
 ```
 
-The figure has some slight differences in numbers, but overall is quite close to the
-figure in the paper.
+Note that `r signif(100*length(unique(prop$region))/nrow(ts3), 3)`%
+of UMRs overlap with an H3K4Me3 peak.
 
-How many genes had a Decrease compared to an increase overall?
+## Figure 3D (RNA Pol II)
 
-```{r}
-de_dn <- sum(ts4b$`FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)` < 1)
-de_up <- sum(ts4b$`FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)` > 1)
-```
+We'll do the same as in the previous section, but for RNA Pol II data.
 
-Looks like there are `r de_dn` decreased genes and `r de_up` increased genes, where
-the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
-`r signif(de_dn / de_up,3)`.
+```{r, fig5b, fig.height=4, fig.width=7, eval = FALSE}
+# read in called peaks from macs
+peaks.all <- NULL
+for (bf in bedfiles[grepl("Pol", bedfiles)]){
+  # import peak bed files as GRanges
+  peaks <- read_tsv(bf, comment = "#", skip = 1, guess_max = 5e5) %>%
+                                mutate(condition = basename(bf))
+  if (length(peaks.all) > 0){
+    peaks.all <- GRangesList(peaks.all, makeGRangesFromDataFrame(peaks))
+  }else{
+    peaks.all <- makeGRangesFromDataFrame(peaks)
+  }
+}
 
-# Alternate versions of Figure 3
+# find common peaks and use outer boundaries
+ol <- findOverlaps(peaks.all[[1]], peaks.all[[2]])
+peaks.all <- GRangesList(peaks.all[[1]][ol@from], 
+                         peaks.all[[2]][ol@to])
+peaks.common <- peaks.all[[1]]
+start(peaks.common) <- pmax(start(peaks.all[[1]]), start(peaks.all[[2]]))
+end(peaks.common) <- pmin(end(peaks.all[[1]]), end(peaks.all[[2]]))
 
-Next we'll try and create alternate versions of these Figures to understand the
-lack of a trend displayed and evaluate whether the (rather strong) conclusion
-about the lack of influence of methylation on expression holds.
+# intersect the UMRs with the peaks
+seqlevels(peaks.common) <- paste0("chr", seqlevels(peaks.common))
+ol <- findOverlaps(peaks.common, makeGRangesFromDataFrame(ts3))
+int <- peaks.common[unique(ol@from), ]
 
-## Alternate versions of Figure 3C
+# intersect the peak-UMRs with chipbs
+int.chip <- bs.h3k4[findOverlaps(bs.h3k4, int)@from, ]
+int.chip <- int.chip[findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@from, ]
+int.wgbs <- bs[findOverlaps(bs, int)@from, ]
+int.wgbs <- int.wgbs[findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@from, ]
 
-First we examine a standard M-A plot to understand the expression magnitude
-and log-FC differences in this dataset.
+# filter both by min coverage of 5 in each condition
+cov.mat <- getCoverage(int.chip, type="Cov")
+filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
+filter <- which(filter)
+int.chip <- int.chip[-filter,]
 
-## Alternate versions of Figure 3D-E
+cov.mat <- getCoverage(int.wgbs, type="Cov")
+filter <- pmax( 1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Control"]) < 10),
+                1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Methylated"]) < 10))
+filter <- which(filter > 0)
+int.wgbs <- int.wgbs[-filter,]
+rm(cov.mat)
 
-We'd like to make Figure 5B by stratifying by DE significance.
-
-How many DE genes had a decrease compared to an increase overall?
-
-# Making Figure 3 for DMRs instead of UMRs
-
-We also wish to redo Fig 5A with DMRs, instead of UMRs as done in the paper.
-The justification for using UMRs seems to be that they capture the promoters 
-better, but then it seems that methylation differences might not be properly
-captured. Seeing as this is our primary interest, i.e. to look at expression
-changes where there are methylation differences, we'll make a Figure 5A and B
-type plot for associating DMRs with expression.
-This means we need to run the DE analysis and associate genes with
-DMRs by overlapping up to 2kb away from promoter region.
-
-Note that here we are starting with the set of DMRs provided by Table S2, 
-which may not be the best approach but saves time in getting the lower level 
-data and processing it. These DMRs were obtained using DSS using very liberal
-thresholds (0.05 and 0.005 compared to the default and recommended threshold 
-of 1e-5). 
-
-## DE analysis
-
-First we need to run the differential expression analysis. 
-
-```{r, expressionEDA, fig.width=8, fig.height=4}
-exp <- fread(file.path(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt"))
-
-# There are duplicate genes -- looks like a classic excel conversion error -- remove these
-dup <- which(table(exp$gene) > 1)
-names(dup)
-exp <- exp %>% filter(!(gene %in% names(dup)))
-
-# move genes to rownames  
-rownames(exp) <- exp$gene
-exp <- as.matrix(exp %>% dplyr::select(-gene))
-allZero <- rowSums(exp==0)==ncol(exp)
-exp <- exp[!allZero,]
-
-# strings to match the two comparison samples - control and ZF + DOX
-ctrl <- "MCF7_emptyVector"
-trt <- "MCF7_ZF_DNMT3A_DOX_rep"
-
-# set up colData
-coldata <- data.frame(sample=colnames(exp)) %>%
-  mutate(condition = ifelse(grepl(ctrl, sample), "Control",
-                     ifelse(grepl(trt, sample), "Methylated", "Other"))) 
-
-dds <- DESeqDataSetFromMatrix(countData = exp,
-                              colData = coldata,
-                              design = ~ condition)
-dds <- dds[, dds$condition != "Other"]
-dds$condition <- droplevels(dds$condition)
-dds <- estimateSizeFactors(dds)
-
-# plot distribution of expression values
-exp <- data.frame(counts(dds)) %>% 
-  gather(sample, count) %>% 
-  mutate(normcount = (data.frame(counts(dds, normalize=TRUE)) %>% 
-           gather(sample, count))$count) %>%
-  mutate(condition = ifelse(grepl(ctrl, sample), "Control", "Methylated")) %>%
-  mutate(dox = ifelse(grepl("noDOX", sample), "No Dox", 
-                      ifelse(grepl("DOXremoval", sample), "Dox withdrawal", 
-                             "Dox")))
+# compute methylation proportions
+prop1 <- as.data.frame(getMeth(int.chip, type="raw")) %>% 
+  mutate(region = findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@to) %>%
+  gather("Group", "Meth", 1:2) %>%
+  mutate(type = "ChIP-purified") %>% 
+  group_by(region, Group, type) %>%
+  summarize(Meth = mean(Meth, na.rm = TRUE))
   
-ggplot(exp, aes(x=count+1, group=sample, color=condition)) +
-  geom_density(adjust=0.75) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of raw counts")
+prop2 <-  (as.data.frame(getMeth(int.wgbs, type="raw")) %>% 
+    mutate(region = findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@to) %>%
+    gather("Sample", "Meth", 1:6) %>%
+    mutate(Group = ifelse(grepl("Vector", Sample) | grepl("noDox", Sample),
+                          "noDOX", "DOX"),
+           type = "WGBS")) %>% 
+    group_by(region, Group, type) %>%
+    summarize(Meth = mean(Meth, na.rm = TRUE))
 
-ggplot(exp, aes(x=count+1, group=interaction(dox, condition), color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of raw counts")
+prop <- bind_rows(prop1, prop2)
 
-ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of normalized counts")
+prop$Group <- as.factor(prop$Group)
+prop$type <- as.factor(prop$type)
+prop$Group <- factor(prop$Group, levels(prop$Group)[c(2,1)])
+prop$type <- factor(prop$type, levels(prop$type)[c(2,1)])
 
+# plot
+ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
+  scale_fill_manual(values = c("red", "blue")) +
+  geom_boxplot(outlier.shape=NA) + 
+  theme_classic() + 
+  xlab("Experiment type") +
+  ylab("Average methylation proportion") +
+  ggtitle("UMR : RNA PolII Peak intersections")
 ```
 
-There could be an effect of dox on the control cell line - the dox control group
-looks very similar to the methylated group, and the dox withdrawal group has higher 
-expression (but withdrawal and no dox groups are in opposite order).
+Note that `r signif(100*length(unique(prop$region))/nrow(ts3), 3)`%
+of UMRs overlap with an H3K4Me3 peak.
 
-Going forward, we'll use only the no dox control versus the dox methylated group
-for the DE comparison. In addition, since we observe global shifts in the expected
-direction (i.e. lower expression for the methylated condition), we will not perform
-standard normalization.
+# Figure 3D and E with DMRs instead of UMRS
 
-```{r, deseq}
-dds <- dds[, dds$condition == "Methylated" | 
-             (dds$condition == "Control" & grepl("noDOX", dds$sample)) ]
-sizeFactors(dds) <- 1
-dds <- DESeq(dds)
-res <- results(dds)
+We repeat the past couple of sections using dmrseq DMRs instead of UMRs.
 
-sum(res$padj < 0.01, na.rm = TRUE)
-res <- res %>% na.omit()
-```
-## Associate DMRs with genes
+## Figure 3D (H3K4me3)
 
-Next we need to associate each DMR with a gene by checking overlap with promoters.
-We'll grab the promoter annotation using annotatr.
+First we'll make the plot comparing average methylation values in H3K4me3 peaks
+that overlap a DMR. 
 
-```{r, annotatr}
-annot = build_annotations(genome = 'hg19', annotations = 'hg19_genes_promoters')
-ol <- distanceToNearest(makeGRangesFromDataFrame(ts2), annot)
+```{r, fig5b, fig.height=4, fig.width=7, eval = FALSE}
+# read in called peaks from macs
+peaks.all <- NULL
+for (bf in bedfiles[grepl("H3K4", bedfiles)]){
+  # import peak bed files as GRanges
+  peaks <- read_tsv(bf, comment = "#", skip = 1, guess_max = 5e5) %>%
+                                mutate(condition = basename(bf))
+  if (length(peaks.all) > 0){
+    peaks.all <- GRangesList(peaks.all, makeGRangesFromDataFrame(peaks))
+  }else{
+    peaks.all <- makeGRangesFromDataFrame(peaks)
+  }
+}
 
-dmrs <- ts2[ol@from[mcols(ol)$distance <= 2000],]
-dmrs$gene <- annot$symbol[ol@to[mcols(ol)$distance <= 2000]]
+# find common peaks and use outer boundaries
+ol <- findOverlaps(peaks.all[[1]], peaks.all[[2]])
+peaks.all <- GRangesList(peaks.all[[1]][ol@from], 
+                         peaks.all[[2]][ol@to])
+peaks.common <- peaks.all[[1]]
+start(peaks.common) <- pmax(start(peaks.all[[1]]), start(peaks.all[[2]]))
+end(peaks.common) <- pmin(end(peaks.all[[1]]), end(peaks.all[[2]]))
 
-dmrs <- dmrs %>% 
-  filter(!is.na(gene))
+# intersect the UMRs with the peaks
+ol <- findOverlaps(peaks.common, makeGRangesFromDataFrame(ts3))
+int <- peaks.common[unique(ol@from), ]
 
-# check overlap with UMRs
-po <- sum(countOverlaps(makeGRangesFromDataFrame(dmrs),
-                  makeGRangesFromDataFrame(ts4))) / nrow(dmrs)
-```
+# intersect the peak-UMRs with chipbs
+seqlevels(int) <- paste0("chr", seqlevels(int))
+seqlevels(dmrs) <- paste0("chr", seqlevels(dmrs))
+int.chip <- bs.h3k4[findOverlaps(bs.h3k4, int)@from, ]
+int.chip <- int.chip[findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@from, ]
+int.wgbs <- bs[findOverlaps(bs, int)@from, ]
+int.wgbs <- int.wgbs[findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@from, ]
 
-These promoter-DMRs overlap highly with the UMRs (`r signif(100*po,3)`%)
-Now that we have a set of DMR-Gene associations, we'll add the the DE information 
-to the DMR data frame.
+# filter both by min coverage of 5 in each condition
+cov.mat <- getCoverage(int.chip, type="Cov")
+filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
+filter <- which(filter)
+int.chip <- int.chip[-filter,]
 
-```{r}
-# add DE results
-x <- match(dmrs$gene, rownames(res)) 
-dmrs <- dmrs[!is.na(x),]
-x <- x[!is.na(x)]
-res.dmrs <- res[x,]
+cov.mat <- getCoverage(int.wgbs, type="Cov")
+filter <- pmax( 1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Control"]) < 10),
+                1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Methylated"]) < 10))
+filter <- which(filter > 0)
+int.wgbs <- int.wgbs[-filter,]
+rm(cov.mat)
 
-dmrs <- cbind(dmrs, res.dmrs)
-```
+# compute methylation proportions
+prop1 <- as.data.frame(getMeth(int.chip, type="raw")) %>% 
+  mutate(region = findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@to) %>%
+  gather("Group", "Meth", 1:2) %>%
+  mutate(type = "ChIP-purified") %>% 
+  group_by(region, Group, type) %>%
+  summarize(Meth = mean(Meth, na.rm = TRUE))
+  
+prop2 <-  (as.data.frame(getMeth(int.wgbs, type="raw")) %>% 
+    mutate(region = findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@to) %>%
+    gather("Sample", "Meth", 1:6) %>%
+    mutate(Group = ifelse(grepl("Vector", Sample) | grepl("noDox", Sample),
+                          "noDOX", "DOX"),
+           type = "WGBS")) %>% 
+    group_by(region, Group, type) %>%
+    summarize(Meth = mean(Meth, na.rm = TRUE))
 
-## Figure 5C for DMRs
+prop <- bind_rows(prop1, prop2)
 
-Now we create the scatterplot like Figure 5A for dmrs.
+prop$Group <- as.factor(prop$Group)
+prop$type <- as.factor(prop$type)
+prop$Group <- factor(prop$Group, levels(prop$Group)[c(2,1)])
+prop$type <- factor(prop$type, levels(prop$type)[c(2,1)])
 
-```{r, dmrs-5a}
-dmrs <- data.frame(dmrs@listData) %>% 
-  mutate(sig = padj < 0.01,
-         FC = 2^log2FoldChange,
-         delta_mC = methylation_level_in_ZF_D3A_plus_dox -
-           methylation_level_in_MCF7_control) %>%
-  mutate(A = 0.5*(log2(baseMean) + 
-               log2(FC*baseMean))) %>%
-  mutate(ABin = ntile(A, 9)) %>%
-  filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
-  filter(delta_mC > 0)
-
-ggplot(dmrs, aes(x = delta_mC, y = log2FoldChange)) +
-  geom_hline(yintercept=0, col="black") +
-  geom_hline(yintercept=0, col="white", linetype="dashed") +
-  geom_point(size=0.5, alpha=0.75, aes(color = sig)) + 
-  theme_bw() + 
-  xlab(expression(paste(Delta, "mCG in DMR"))) +
-  ylab("log2 fold change mRNA abundance") +
-  scale_color_manual(values=c("black", "red")) +
-  geom_smooth(data=dmrs %>% filter(sig==TRUE)) +
-  labs(color="Differentially\n Expressed")
-```
-
-From this figure it is a little more clear that most DE genes are down-regulated.
-But there doesn't seem to be much of a trend for larger magnitude expression 
-differences with larger magnitude methylation differences.
-
-## Figure 5D-E for DMRs
-
-First in the style of the paper:
-```{r, dmrs-5b-orig, fig.height=4, fig.width=7}
-dmrsb <- dmrs %>% 
-  filter(delta_mC > 0.3) %>%
-  mutate(FCcat = cut(FC,
-                     breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
-  mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
-                        ifelse(FCcat == "(0.7,0.9]", "Small Decrease", "Decrease"))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat))))
-
-ggplot(dmrsb, aes(FCcat, fill = color)) +
-  geom_bar() + 
-  theme_bw() + 
-  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
-  xlab("mRNA fold change") +
-  ylab("Number of genes") +
-  ggtitle("All Gene - DMR Pairs") + 
-  annotate("text", x = 6, y = 750, label = paste0("n=",nrow(dmrsb))) +
-  labs(fill="Direction \nof effect")
+# plot
+ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
+  scale_fill_manual(values = c("red", "blue")) +
+  geom_boxplot(outlier.shape=NA) + 
+  theme_classic() + 
+  xlab("Experiment type") +
+  ylab("Average methylation proportion") +
+  ggtitle("UMR : H3K4me3 Peak intersections")
 ```
 
-How many DE genes had a decrease compared to an increase overall?
+Note that `r signif(100*length(unique(prop$region))/nrow(ts3), 3)`%
+of UMRs overlap with an H3K4Me3 peak.
 
-```{r}
-de_dn <- sum(dmrsb$log2FoldChange < 0, na.rm=TRUE)
-de_up <- sum(dmrsb$log2FoldChange > 0, na.rm=TRUE)
+## Figure 3D (RNA Pol II)
+
+We'll do the same as in the previous section, but for RNA Pol II data.
+
+```{r, fig5b, fig.height=4, fig.width=7, eval = FALSE}
+# read in called peaks from macs
+peaks.all <- NULL
+for (bf in bedfiles[grepl("Pol", bedfiles)]){
+  # import peak bed files as GRanges
+  peaks <- read_tsv(bf, comment = "#", skip = 1, guess_max = 5e5) %>%
+                                mutate(condition = basename(bf))
+  if (length(peaks.all) > 0){
+    peaks.all <- GRangesList(peaks.all, makeGRangesFromDataFrame(peaks))
+  }else{
+    peaks.all <- makeGRangesFromDataFrame(peaks)
+  }
+}
+
+# find common peaks and use outer boundaries
+ol <- findOverlaps(peaks.all[[1]], peaks.all[[2]])
+peaks.all <- GRangesList(peaks.all[[1]][ol@from], 
+                         peaks.all[[2]][ol@to])
+peaks.common <- peaks.all[[1]]
+start(peaks.common) <- pmax(start(peaks.all[[1]]), start(peaks.all[[2]]))
+end(peaks.common) <- pmin(end(peaks.all[[1]]), end(peaks.all[[2]]))
+
+# intersect the UMRs with the peaks
+ol <- findOverlaps(peaks.common, dmrs)
+int <- peaks.common[unique(ol@from), ]
+
+# intersect the peak-UMRs with chipbs
+seqlevels(int) <- paste0("chr", seqlevels(int))
+seqlevels(dmrs) <- paste0("chr", seqlevels(dmrs))
+int.chip <- bs.h3k4[findOverlaps(bs.h3k4, int)@from, ]
+int.chip <- int.chip[findOverlaps(int.chip, dmrs)@from, ]
+int.wgbs <- bs[findOverlaps(bs, int)@from, ]
+int.wgbs <- int.wgbs[findOverlaps(int.wgbs, dmrs)@from, ]
+
+# filter both by min coverage of 5 in each condition
+cov.mat <- getCoverage(int.chip, type="Cov")
+filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
+filter <- which(filter)
+int.chip <- int.chip[-filter,]
+
+cov.mat <- getCoverage(int.wgbs, type="Cov")
+filter <- pmax( 1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Control"]) < 10),
+                1*(DelayedMatrixStats::rowSums2(cov.mat[,pData(bs)$condition == "Methylated"]) < 10))
+filter <- which(filter > 0)
+int.wgbs <- int.wgbs[-filter,]
+rm(cov.mat)
+
+# compute methylation proportions
+prop1 <- as.data.frame(getMeth(int.chip, type="raw")) %>% 
+  mutate(region = findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@to) %>%
+  gather("Group", "Meth", 1:2) %>%
+  mutate(type = "ChIP-purified") %>% 
+  group_by(region, Group, type) %>%
+  summarize(Meth = mean(Meth, na.rm = TRUE))
+  
+prop2 <-  (as.data.frame(getMeth(int.wgbs, type="raw")) %>% 
+    mutate(region = findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@to) %>%
+    gather("Sample", "Meth", 1:6) %>%
+    mutate(Group = ifelse(grepl("Vector", Sample) | grepl("noDox", Sample),
+                          "noDOX", "DOX"),
+           type = "WGBS")) %>% 
+    group_by(region, Group, type) %>%
+    summarize(Meth = mean(Meth, na.rm = TRUE))
+
+prop <- bind_rows(prop1, prop2)
+
+prop$Group <- as.factor(prop$Group)
+prop$type <- as.factor(prop$type)
+prop$Group <- factor(prop$Group, levels(prop$Group)[c(2,1)])
+prop$type <- factor(prop$type, levels(prop$type)[c(2,1)])
+
+# plot
+ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
+  scale_fill_manual(values = c("red", "blue")) +
+  geom_boxplot(outlier.shape=NA) + 
+  theme_classic() + 
+  xlab("Experiment type") +
+  ylab("Average methylation proportion") +
+  ggtitle("DMR : RNA PolII Peak intersections")
 ```
-Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
-the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
-`r signif(de_dn / de_up,3)`.
+
+Note that `r signif(100*length(unique(prop$region))/nrow(ts3), 3)`%
+of UMRs overlap with an H3K4Me3 peak.
 
 
-Next in the improved symmetrical style and separating by DE status:
-```{r,fig.height=5, fig.width=10} 
-dmrsc <- dmrs %>% 
-  filter(delta_mC > 0.3) %>%
-  mutate(sig = padj < 0.01) %>%
-  mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
-  mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
-  mutate(FCcat = factor(FCcat, levels = rev(levels(FCcat)))) %>%
-  na.omit()
-
-ggplot(dmrsc, aes(FCcat, fill = color)) +
-  geom_bar() + 
-  facet_wrap( ~ sig) +
-  theme_bw() + 
-  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
-  xlab("mRNA fold change") + 
-  ylab("Number of genes") +
-  ggtitle("Gene - DMR Pairs by DE significance") +
-  labs(fill="Direction \nof effect")
-```
-
-How many DE genes had a decrease compared to an increase overall?
-
-```{r}
-de_dn <- sum(dmrsb$sig & dmrsb$log2FoldChange < 0, na.rm=TRUE)
-de_up <- sum(dmrsb$sig & dmrsb$log2FoldChange > 0, na.rm=TRUE)
-```
-Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
-the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
-`r signif(de_dn / de_up,3)`.
-
-This shows a similar result to using the UMRs - namely that DE genes are mostly 
-downregulated when their promoter is demethylated.
 
 # Session Information
 
