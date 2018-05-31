@@ -1,5 +1,5 @@
 ---
-title: "Reproducing Figure 5 from Ford et al. (2017)"
+title: "Reproducing Figure 3 from Ford et al. (2017)"
 author: "Keegan Korthauer"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
@@ -114,13 +114,12 @@ if (!file.exists(file)){
 }
 ```
 
-Finally, we download the ChIP-BS data for H3K4Me3 and RNA Pol II  
+Finally, we download the raw ChIP-BS data for H3K4Me3 and RNA Pol II  
 from the same GEO accession number 
-as the RNA-seq count table. We'll parse the provided `allC` files to 
-extract only the cytosines at CpGs.
+as the RNA-seq count table. 
 
 ```{r, downloadGEO2}
-# first the ChIP-BS data for PolII and H3K4Me3 count tables
+# metadata
 meta = pData(phenoData(getGEO("GSE102395")[[1]]))
 filePaths <- as.character(meta$supplementary_file_1[grepl("H3K4", meta$characteristics_ch1.2) |
                                                     grepl("polymerase", meta$characteristics_ch1.2)])
@@ -130,47 +129,6 @@ dataset <- ifelse(grepl("H3K4", srxs$`antibody:ch1`), "H3K4", "PolII")
 grouping <- ifelse(grepl("noDOX|noDox", srxs$source_name_ch1), "Ctrl", "Meth")
 srxs <- unlist(lapply(strsplit(as.character(srxs$relation.1), "="), 
                       function(x) x[2]))
-
-for (file in filePaths){
-  fi <- file.path(datdir,
-              sapply(strsplit(file, "/"), function(x) x[length(x)]))
-  err <- gsub(".gz", "", fi)
-  if (!file.exists(fi) && !file.exists(gsub(".gz", "", fi))){
-    download.file(url = file, destfile = fi)
-  }
-   
-  if (!file.exists(gsub(".gz", "", fi))){
-    err <- try(gunzip(fi), silent = TRUE) 
-  }
-  
-  if (err==gsub(".gz", "", fi)){
-    message("Downloaded and unzipped file ", fi)
-    
-    if (!file.exists(gsub("allC", "CpG", gsub(".gz", "", fi)))){
-      system(paste0("awk '($5 == \"CG\")' ", gsub(".gz", "", fi),
-                  " > ", gsub("allC", "CpG", gsub(".gz", "", fi))))
-    }
-    message("CpGs filtered for file ", gsub("allC", "CpG", gsub(".gz", "", fi)))
-  }else{
-    message(err)
-    message("Skipping file ", fi, " since it is corrupt.")
-    file.remove(fi)
-  }
-}
-
-# next the ChIP bigWig data for H3K4Me3
-filePaths <- as.character(meta$supplementary_file_1[grepl("H3K4me3_ChIP.bigWig",
-                                                          meta$supplementary_file_1)])
-for (file in filePaths){
-  fi <- file.path(datdir,
-              sapply(strsplit(file, "/"), function(x) x[length(x)]))
-  err <- gsub(".gz", "", fi)
-  if (!file.exists(fi) && !file.exists(gsub(".gz", "", fi))){
-    download.file(url = file, destfile = fi)
-  }
-}
-
-# next the raw ChIP-seq data 
 
 ## Get DB (might take few minutes) for querying SRRs from SRXs
 sqlfile <- file.path(datdir,
@@ -266,8 +224,6 @@ for (b in seq_along(bam.files)){
   }
 }
 
-# don't need to extract the methylation estimates since already have WGBS data
-
 # sort bamfiles
 bam.files <- file.path(fqdir, paste0(all.sra, "_trimmed_bismark_bt2.bam"))
 bam.files.sort <- file.path(fqdir, paste0(dataset,"_", grouping, 
@@ -280,6 +236,58 @@ for (bf in seq_along(bam.files)){
   }else{
     message("Bam file ", bf, " already sorted.")
   }
+}
+
+# Extract the methylation estimates
+covfiles <- gsub(".bam", ".bismark.cov.gz", bam.files.sort)
+  file.path(fqdir, paste0(srxs, ".CpG_report.txt"))
+for (b in seq_along(bam.files.sort)){
+  if (length(list.files(path = fqdir,
+                        pattern = paste0("CpG_context_", basename(covfiles[b]),
+                                         ".*methXtractor.temp"))) > 0){
+    file.remove(list.files(path = fqdir,
+                        pattern = paste0("CpG_context_", basename(covfiles[b]),
+                                         ".*methXtractor.temp"),
+                        full.names = TRUE))
+    file.remove(covfiles[b])
+  }
+  
+  if (!file.exists(covfiles[b])){
+    system(paste0(file.path(bismarkpath, "bismark_methylation_extractor"),
+                  " -s --comprehensive --merge_non_CpG -o ",
+                  fqdir, " --multicore ", ncores, " --buffer_size 20G --counts ",
+                  "--bedGraph --gzip --genome_folder ", fqdir,
+                  " ", bam.files.sort[b]))
+  }
+}
+
+# Save methylation estimates as bsseq rds object
+cbs.h3k4.file <- file.path(datdir, "chipBS_h3k4.rds")
+cbs.polII.file <- file.path(datdir, "chipBS_polII.rds")
+if (!file.exists(cbs.h3k4.file)){	
+  wc <- which(grepl("H3K4", covfiles))
+  
+	bs <- read.bismark(covfiles[wc],
+				 sampleNames = paste0(dataset[wc], "_", grouping[wc]), 
+				 fileType="cov",
+				 strandCollapse=FALSE,
+				 rmZeroCov=FALSE,
+				 verbose = TRUE)
+	saveRDS(bs, file=cbs.h3k4.file)
+	rm(bs)
+}
+
+if (!file.exists(cbs.polII.file)){	
+  wc <- which(grepl("Pol", covfiles))
+  
+	bs <- read.bismark(covfiles[wc],
+				 sampleNames = paste0(dataset[wc], "_", grouping[wc]), 
+				 fileType="cov",
+				 strandCollapse=FALSE,
+				 rmZeroCov=FALSE,
+				 verbose = TRUE)
+	saveRDS(bs, file=cbs.polII.file)
+	rm(bs)
 }
 ```
 
@@ -858,42 +866,17 @@ Here we read in the ChIP-BS data, which according to GEO has the following forma
 >> For the ChIP-BS-seq data the 'allC' file format is a tab-delimited text file with the following columns: 1) chromosome, 2) position, 3) position, 4) strand, 5) context, 6) cytosine base calls, and 7) all base calls.
 
 ```{r, read.lister}
-# h3k4 chip bs data
-bfile <- file.path(datdir, "bsseq_h3k4me3.rds")
-files <- list.files(datdir, pattern = "BS.CpG.txt", full.names = TRUE)
-if (!file.exists(bfile)){
-  hfiles <- files[grepl("H3K4", files)]
-  bs.h3k4 <- read.lister(hfiles, sampleNames = hfiles, rmZeroCov = TRUE,
-                    strandCollapse = TRUE, mc.cores = ncores,
-                    chipBS = TRUE)
-  if ("BSseq" %in% class(bs.h3k4)){
-    saveRDS(bs.h3k4, bfile)
-  }
-}else{
-  bs.h3k4 <- readRDS(bfile)
-}
-
-# polII chip bs data
-bfile <- file.path(datdir, "bsseq_polII.rds")
-if (!file.exists(bfile)){
-  pfiles <- files[grepl("PolII", files)]
-  
-  bs.pol <- read.lister(pfiles, sampleNames = pfiles, rmZeroCov = TRUE,
-                    strandCollapse = TRUE, mc.cores = ncores,
-                    chipBS = TRUE)
-  if ("BSseq" %in% class(bs.pol)){
-    saveRDS(bs.pol, bfile)
-  }
-}else{
-  bs.pol <- readRDS(bfile)
-}
+bs.h3k4 <- readRDS(file=cbs.h3k4.file)
+bs.pol <- readRDS(file=cbs.polII.file)
+seqlevels(bs.h3k4) <- paste0("chr", seqlevels(bs.h3k4))
+seqlevels(bs.pol) <- paste0("chr", seqlevels(bs.pol))
 
 bs <- readRDS(file.path(datdir, "bsseq.rds"))
 bs <- bs[,pData(bs)$dox != "Dox Withdrawal" | pData(bs)$condition == "Control"]
 
-sampleNames(bs.h3k4) <- ifelse(grepl("noDOX", sampleNames(bs.h3k4)), 
+sampleNames(bs.h3k4) <- ifelse(grepl("Ctrl", sampleNames(bs.h3k4)), 
                                "noDOX", "DOX")
-sampleNames(bs.pol) <- ifelse(grepl("noDOX", sampleNames(bs.pol)), 
+sampleNames(bs.pol) <- ifelse(grepl("Ctrl", sampleNames(bs.pol)), 
                                "noDOX", "DOX")
 sampleNames(bs) <- pData(bs)$basefile
 
