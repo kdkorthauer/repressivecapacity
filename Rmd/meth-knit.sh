@@ -4,7 +4,7 @@
 #SBATCH -N 1                        # All cores on one machine
 #SBATCH -p irizarry                   # Partition - shared
 #SBATCH --mem 200G                  # Memory request - 125G
-#SBATCH -t 0-4:00                  # Maximum execution time (D-HH:MM)- 0-18:00
+#SBATCH -t 1-4:00                  # Maximum execution time (D-HH:MM)- 0-18:00
 #SBATCH -o ../SLURM/render-%j.out      # Standard output
 #SBATCH -e ../SLURM/render-%j.err      # Standard error
  

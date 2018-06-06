@@ -71,6 +71,10 @@ trimgalorepath <- "~/trim_galore_zip/trim_galore"
 
 # path to where bismark is installed
 bismarkpath <- "~/bin/Bismark"
+
+# output files
+cbs.h3k4.file <- file.path(datdir, "chipBS_h3k4.rds")
+cbs.polII.file <- file.path(datdir, "chipBS_polII.rds")
 ```
 
 # Data download
@@ -262,8 +266,6 @@ for (b in seq_along(bam.files.sort)){
 }
 
 # Save methylation estimates as bsseq rds object
-cbs.h3k4.file <- file.path(datdir, "chipBS_h3k4.rds")
-cbs.polII.file <- file.path(datdir, "chipBS_polII.rds")
 if (!file.exists(cbs.h3k4.file)){	
   wc <- which(grepl("H3K4", covfiles))
   
@@ -787,6 +789,7 @@ rse <- summarizeOverlaps(dmrs, bfL.PolII, mode = "Union")
 assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
                                 function(x) x / sizeFactors.PolII))
 
+
 # add counts to dmr dataframe
 dmrs.chip <- data.frame(dmrs) %>%
   mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
@@ -850,15 +853,21 @@ In more detail, Figure 3D and E are used to support the following claims:
 > Importantly, phospho-Ser5 RNA pol II was clearly able to directly interact with ZF-D3A methylated DNA (Fig. 3E)
 
 To construct these figures, we need to intersect the ChIP-BS data with the UMRs. 
-For now, we'll
-use the methylation measurements from WGBS data (even though using the ChIP-BS
-data would be more direct, this should still show a signal). See the 
+we'll use both the whole genome bisulfite sequencing data and the ChIP-BS
+data. See the 
 `methylationCountAnalysis.Rmd` for details on how the WGBS data is downloaded and 
 processed.
 
-Here we are interested in merged peaks between control and dox (using peak 
+In the paper, the authors used merged peaks between control and dox (using peak 
 intersections) that also intersect with a UMR with >0.2 methylation 
-change.
+change. Since the vast majority of methylation differences from control to dox
+are in the positive direction, it is not surprising that the boxplots show a 
+methylation difference in the positive direction. What we'd really like to contrast 
+is the methylation level in UMRs that overlap a peak with UMRs that do not overlap 
+a peak. We expect that if H3K4Me3 sites are usually demethylated, and if forced 
+methylation really does influence H3K4Me3 levels, the methylation level in 
+UMRs that don't overlap H3K4Me3 peaks will be higher on average than those which
+do overlap a peak. And the same thing goes for RNA Pol II peaks.
 
 ## Read in ChIP-BS data
 
@@ -886,8 +895,8 @@ show(bs.pol)
 
 ## Figure 3D (H3K4me3)
 
-First we'll make the plot comparing average methylation values in H3K4me3 peaks
-that overlap a UMR.
+First we'll make the plot comparing average methylation values in UMRs by whether
+they overlap a H3K4me3 peak, for both the WGBS and ChIP-purified experiments.
 
 ```{r, fig5b, fig.height=4, fig.width=7}
 # read in called peaks from macs
@@ -912,20 +921,20 @@ peaks.common <- peaks.all[[1]]
 start(peaks.common) <- pmax(start(peaks.all[[1]]), start(peaks.all[[2]]))
 end(peaks.common) <- pmin(end(peaks.all[[1]]), end(peaks.all[[2]]))
 
-# intersect the UMRs with the peaks
-seqlevels(peaks.common) <- paste0("chr", seqlevels(peaks.common))
-ol <- findOverlaps(peaks.common, makeGRangesFromDataFrame(ts3))
-int <- peaks.common[unique(ol@from), ]
+# subset on normalized read count in common peaks
+rse <- summarizeOverlaps(peaks.common, bfL.H3K4, mode = "Union")
+assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
+                                 function(x) x / sizeFactors.H3K4))
+int <- peaks.common[which(rowSums(assays(rse)$normcounts > 100) == 2)]
+seqlevels(int) <- paste0("chr", seqlevels(int))
 
 # intersect the peak-UMRs with chipbs
-int.chip <- bs.h3k4[findOverlaps(bs.h3k4, int)@from, ]
-int.chip <- int.chip[findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@from, ]
-int.wgbs <- bs[findOverlaps(bs, int)@from, ]
-int.wgbs <- int.wgbs[findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@from, ]
+int.chip <- bs.h3k4[findOverlaps(bs.h3k4, makeGRangesFromDataFrame(ts3))@from, ]
+int.wgbs <- bs[findOverlaps(bs, makeGRangesFromDataFrame(ts3))@from, ]
 
 # filter both by min coverage of 5 in each condition
 cov.mat <- getCoverage(int.chip, type="Cov")
-filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
+filter <- DelayedMatrixStats::rowSums2(cov.mat > 4) < 2
 filter <- which(filter)
 int.chip <- int.chip[-filter,]
 
@@ -938,80 +947,44 @@ rm(cov.mat)
 
 # compute methylation proportions
 prop1 <- as.data.frame(getMeth(int.chip, type="raw")) %>% 
-  mutate(region = findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@to) %>%
+  mutate(region = findOverlaps(int.chip, makeGRangesFromDataFrame(ts3), select = "first"),
+         status = ifelse(countOverlaps(int.chip, int) > 0, "H3K4me3 Peak", "No Peak")) %>%
   gather("Group", "Meth", 1:2) %>%
   mutate(type = "ChIP-purified") %>% 
-  group_by(region, Group, type) %>%
-  summarize(Meth = mean(Meth, na.rm = TRUE))
+  group_by(region, Group, type, status) %>%
+  summarize(Meth = mean(Meth, na.rm = TRUE)) 
   
 prop2 <-  (as.data.frame(getMeth(int.wgbs, type="raw")) %>% 
-    mutate(region = findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@to) %>%
+    mutate(region = findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3), select = "first"),
+           status = ifelse(countOverlaps(int.wgbs, int) > 0, "H3K4me3 Peak", "No Peak")) %>%
     gather("Sample", "Meth", 1:6) %>%
     mutate(Group = ifelse(grepl("Vector", Sample) | grepl("noDox", Sample),
                           "noDOX", "DOX"),
            type = "WGBS")) %>% 
-    group_by(region, Group, type) %>%
+    group_by(region, Group, type, status) %>%
     summarize(Meth = mean(Meth, na.rm = TRUE))
 
 prop <- bind_rows(prop1, prop2)
 
 prop$Group <- as.factor(prop$Group)
-prop$type <- as.factor(prop$type)
 prop$Group <- factor(prop$Group, levels(prop$Group)[c(2,1)])
+prop$type <- as.factor(prop$type)
 prop$type <- factor(prop$type, levels(prop$type)[c(2,1)])
 
 # plot
-ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
-  scale_fill_manual(values = c("red", "blue")) +
-  geom_boxplot(outlier.shape=NA) + 
+ggplot(prop, aes(x = Group, y = Meth, color =  status)) +
+  scale_color_manual(values = c("darkred", "darkblue")) +
+  geom_boxplot() + 
+  facet_wrap(~ type) +
   theme_classic() + 
-  xlab("Experiment type") +
+  xlab("Treatment") +
   ylab("Average methylation proportion") +
-  ggtitle("UMR : H3K4me3 Peak intersections")
+  labs(color = "Overlap") +
+  ggtitle("UMRs and H3K4me3 Peaks")
 ```
 
-Note that `r signif(100*length(unique(prop1$region))/nrow(ts3), 3)`%
-of UMRs overlap with an H3K4Me3 peak. We'll look at how the proportion of 
-overlapping UMRs changes with methylation effect size.
-
-```{r, fig.width = 10}
-peaks.chip <- bs.h3k4[findOverlaps(bs.h3k4, peaks.common)@from, ]
-
-# filter both by min coverage of 5 in each condition
-cov.mat <- getCoverage(peaks.chip, type="Cov")
-filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
-filter <- which(filter)
-peaks.chip <- peaks.chip[-filter,]
-
-ol <- findOverlaps(peaks.chip, makeGRangesFromDataFrame(ts3))
-ol2 <- findOverlaps(peaks.chip, peaks.common)
-ol3 <- findOverlaps(peaks.common, makeGRangesFromDataFrame(ts3))
-
-prop.peaks <- as.data.frame(getMeth(peaks.chip, type="raw")) 
-
-prop.peaks$region <- NA
-prop.peaks$region[ol@from] <- ol@to
-
-prop.peaks <- prop.peaks %>%
-  mutate(peak = ol2@to) %>% 
-  mutate(delta_mC = DOX - noDOX) %>%
-  group_by(peak) %>%
-  summarize(regions = length(unique(na.omit(region))),
-            delta_mC = mean(delta_mC, na.rm=TRUE)) %>% 
-  mutate(bins = cut(delta_mC, 
-                    breaks = c(min(delta_mC)-0.01,seq(0,max(delta_mC)+0.05,by=0.05)), 
-                    dig.lab = 2)) %>%
-  group_by(bins) %>%
-  summarize(nOverlap = sum(regions > 0),
-            n = n()) %>%
-  mutate(pOverlap = nOverlap / n)
-
-ggplot(prop.peaks, aes(x = bins, y = pOverlap)) +
-  geom_point() +
-  geom_line(aes(group = 1)) +
-  xlab(expression(paste(Delta, "mCG bin"))) +  
-  ylab("Proportion of UMRs overlapping H3K4me3 peaks")
-```
+Note that `r signif(100*length(unique(prop1$region[prop1$status == "H3K4me3 Peak"]))/nrow(ts3), 3)`%
+of UMRs overlap with an H3K4Me3 peak. 
 
 ## Figure 3D (RNA Pol II)
 
@@ -1019,7 +992,7 @@ We'll do the same as in the previous section, but for RNA Pol II data.
 
 ```{r, fig5b-pol, fig.height=4, fig.width=7}
 # read in called peaks from macs
-bedfiles <- file.path(datdir, paste0(dataset,"_", grouping, "_peaks.xls")) 
+bedfiles <- file.path(datdir, paste0(dataset,"_", grouping, "_peaks.xls"))
 peaks.all <- NULL
 for (bf in bedfiles[grepl("Pol", bedfiles)]){
   # import peak bed files as GRanges
@@ -1040,20 +1013,20 @@ peaks.common <- peaks.all[[1]]
 start(peaks.common) <- pmax(start(peaks.all[[1]]), start(peaks.all[[2]]))
 end(peaks.common) <- pmin(end(peaks.all[[1]]), end(peaks.all[[2]]))
 
-# intersect the UMRs with the peaks
-seqlevels(peaks.common) <- paste0("chr", seqlevels(peaks.common))
-ol <- findOverlaps(peaks.common, makeGRangesFromDataFrame(ts3))
-int <- peaks.common[unique(ol@from), ]
+# subset on normalized read count in common peaks
+rse <- summarizeOverlaps(peaks.common, bfL.PolII, mode = "Union")
+assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
+                                 function(x) x / sizeFactors.PolII))
+int <- peaks.common[which(rowSums(assays(rse)$normcounts > 50) == 2)]
+seqlevels(int) <- paste0("chr", seqlevels(int))
 
 # intersect the peak-UMRs with chipbs
-int.chip <- bs.pol[findOverlaps(bs.pol, int)@from, ]
-int.chip <- int.chip[findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@from, ]
-int.wgbs <- bs[findOverlaps(bs, int)@from, ]
-int.wgbs <- int.wgbs[findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@from, ]
+int.chip <- bs.pol[findOverlaps(bs.pol, makeGRangesFromDataFrame(ts3))@from, ]
+int.wgbs <- bs[findOverlaps(bs, makeGRangesFromDataFrame(ts3))@from, ]
 
 # filter both by min coverage of 5 in each condition
 cov.mat <- getCoverage(int.chip, type="Cov")
-filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
+filter <- DelayedMatrixStats::rowSums2(cov.mat > 4) < 2
 filter <- which(filter)
 int.chip <- int.chip[-filter,]
 
@@ -1066,80 +1039,46 @@ rm(cov.mat)
 
 # compute methylation proportions
 prop1 <- as.data.frame(getMeth(int.chip, type="raw")) %>% 
-  mutate(region = findOverlaps(int.chip, makeGRangesFromDataFrame(ts3))@to) %>%
+  mutate(region = findOverlaps(int.chip, makeGRangesFromDataFrame(ts3), select = "first"),
+         status = ifelse(countOverlaps(int.chip, int) > 0, "PolII Peak", "No Peak")) %>%
   gather("Group", "Meth", 1:2) %>%
   mutate(type = "ChIP-purified") %>% 
-  group_by(region, Group, type) %>%
-  summarize(Meth = mean(Meth, na.rm = TRUE))
+  group_by(region, Group, type, status) %>%
+  summarize(Meth = mean(Meth, na.rm = TRUE)) 
   
 prop2 <-  (as.data.frame(getMeth(int.wgbs, type="raw")) %>% 
-    mutate(region = findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3))@to) %>%
+    mutate(region = findOverlaps(int.wgbs, makeGRangesFromDataFrame(ts3), select = "first"),
+           status = ifelse(countOverlaps(int.wgbs, int) > 0, "PolII Peak", "No Peak")) %>%
     gather("Sample", "Meth", 1:6) %>%
     mutate(Group = ifelse(grepl("Vector", Sample) | grepl("noDox", Sample),
                           "noDOX", "DOX"),
            type = "WGBS")) %>% 
-    group_by(region, Group, type) %>%
+    group_by(region, Group, type, status) %>%
     summarize(Meth = mean(Meth, na.rm = TRUE))
 
 prop <- bind_rows(prop1, prop2)
 
 prop$Group <- as.factor(prop$Group)
-prop$type <- as.factor(prop$type)
 prop$Group <- factor(prop$Group, levels(prop$Group)[c(2,1)])
+prop$type <- as.factor(prop$type)
 prop$type <- factor(prop$type, levels(prop$type)[c(2,1)])
+prop$status <- as.factor(prop$status)
+prop$status <- factor(prop$status, levels(prop$status)[c(2,1)])
 
 # plot
-ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
-  scale_fill_manual(values = c("red", "blue")) +
-  geom_boxplot(outlier.shape=NA) + 
+ggplot(prop, aes(x = Group, y = Meth, color =  status)) +
+  scale_color_manual(values = c("darkred", "darkblue")) +
+  geom_boxplot() + 
+  facet_wrap(~ type) +
   theme_classic() + 
-  xlab("Experiment type") +
+  xlab("Treatment") +
   ylab("Average methylation proportion") +
-  ggtitle("UMR : RNA PolII Peak intersections")
+  labs(color = "Overlap") +
+  ggtitle("UMRs and RNA PolII Peaks")
 ```
 
-Note that `r signif(100*length(unique(prop1$region))/nrow(ts3), 3)`%
-of UMRs overlap with an RNA PolII peak. We'll look at how the proportion of 
-overlapping UMRs changes with methylation effect size.
-
-```{r, fig.width = 10}
-peaks.chip <- bs.pol[findOverlaps(bs.pol, peaks.common)@from, ]
-
-# filter both by min coverage of 5 in each condition
-cov.mat <- getCoverage(peaks.chip, type="Cov")
-filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
-filter <- which(filter)
-peaks.chip <- peaks.chip[-filter,]
-
-ol <- findOverlaps(peaks.chip, makeGRangesFromDataFrame(ts3))
-ol2 <- findOverlaps(peaks.chip, peaks.common)
-ol3 <- findOverlaps(peaks.common, makeGRangesFromDataFrame(ts3))
-
-prop.peaks <- as.data.frame(getMeth(peaks.chip, type="raw")) 
-
-prop.peaks$region <- NA
-prop.peaks$region[ol@from] <- ol@to
-
-prop.peaks <- prop.peaks %>%
-  mutate(peak = ol2@to) %>% 
-  mutate(delta_mC = DOX - noDOX) %>%
-  group_by(peak) %>%
-  summarize(regions = length(unique(na.omit(region))),
-            delta_mC = mean(delta_mC, na.rm=TRUE)) %>% 
-  mutate(bins = cut(delta_mC, 
-                    breaks = c(min(delta_mC)-0.01,seq(0,max(delta_mC)+0.05,by=0.05)), 
-                    dig.lab = 2)) %>%
-  group_by(bins) %>%
-  summarize(nOverlap = sum(regions > 0),
-            n = n()) %>%
-  mutate(pOverlap = nOverlap / n)
-
-ggplot(prop.peaks, aes(x = bins, y = pOverlap)) +
-  geom_point() +
-  geom_line(aes(group = 1)) +
-  xlab(expression(paste(Delta, "mCG bin"))) +  
-  ylab("Proportion of UMRs overlapping RNA PolII peaks")
-```
+Note that `r signif(100*length(unique(prop1$region[prop1$status == "PolII Peak"]))/nrow(ts3), 3)`%
+of UMRs overlap with an RNA PolII peak.
 
 # Figure 3D and E with DMRs instead of UMRS
 
@@ -1154,6 +1093,7 @@ that overlap a DMR.
 dmrs <- (dmrs <- readRDS(file.path(resdir, "regions.rds")))[dmrs$qval < 0.10, ]
 
 # read in called peaks from macs
+bedfiles <- file.path(datdir, paste0(dataset,"_", grouping, "_peaks.xls"))
 peaks.all <- NULL
 for (bf in bedfiles[grepl("H3K4", bedfiles)]){
   # import peak bed files as GRanges
@@ -1174,22 +1114,20 @@ peaks.common <- peaks.all[[1]]
 start(peaks.common) <- pmax(start(peaks.all[[1]]), start(peaks.all[[2]]))
 end(peaks.common) <- pmin(end(peaks.all[[1]]), end(peaks.all[[2]]))
 
-# intersect the UMRs with the peaks
-seqlevels(dmrs) <- gsub("chr", "", seqlevels(dmrs))
-ol <- findOverlaps(peaks.common, dmrs)
-int <- peaks.common[unique(ol@from), ]
+# subset on normalized read count in common peaks
+rse <- summarizeOverlaps(peaks.common, bfL.H3K4, mode = "Union")
+assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
+                                 function(x) x / sizeFactors.H3K4))
+int <- peaks.common[which(rowSums(assays(rse)$normcounts > 100) == 2)]
+seqlevels(int) <- paste0("chr", seqlevels(int))
 
 # intersect the peak-UMRs with chipbs
-seqlevels(int) <- paste0("chr", seqlevels(int))
-seqlevels(dmrs) <- paste0("chr", seqlevels(dmrs))
-int.chip <- bs.h3k4[findOverlaps(bs.h3k4, int)@from, ]
-int.chip <- int.chip[findOverlaps(int.chip, dmrs)@from, ]
-int.wgbs <- bs[findOverlaps(bs, int)@from, ]
-int.wgbs <- int.wgbs[findOverlaps(int.wgbs, dmrs)@from, ]
+int.chip <- bs.h3k4[findOverlaps(bs.h3k4, dmrs)@from, ]
+int.wgbs <- bs[findOverlaps(bs, dmrs)@from, ]
 
 # filter both by min coverage of 5 in each condition
 cov.mat <- getCoverage(int.chip, type="Cov")
-filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
+filter <- DelayedMatrixStats::rowSums2(cov.mat > 4) < 2
 filter <- which(filter)
 int.chip <- int.chip[-filter,]
 
@@ -1202,81 +1140,44 @@ rm(cov.mat)
 
 # compute methylation proportions
 prop1 <- as.data.frame(getMeth(int.chip, type="raw")) %>% 
-  mutate(region = findOverlaps(int.chip, dmrs)@to) %>%
+  mutate(region = findOverlaps(int.chip, dmrs, select = "first"),
+         status = ifelse(countOverlaps(int.chip, int) > 0, "H3K4me3 Peak", "No Peak")) %>%
   gather("Group", "Meth", 1:2) %>%
   mutate(type = "ChIP-purified") %>% 
-  group_by(region, Group, type) %>%
-  summarize(Meth = mean(Meth, na.rm = TRUE))
+  group_by(region, Group, type, status) %>%
+  summarize(Meth = mean(Meth, na.rm = TRUE)) 
   
 prop2 <-  (as.data.frame(getMeth(int.wgbs, type="raw")) %>% 
-    mutate(region = findOverlaps(int.wgbs, dmrs)@to) %>%
+    mutate(region = findOverlaps(int.wgbs, dmrs, select = "first"),
+           status = ifelse(countOverlaps(int.wgbs, int) > 0, "H3K4me3 Peak", "No Peak")) %>%
     gather("Sample", "Meth", 1:6) %>%
     mutate(Group = ifelse(grepl("Vector", Sample) | grepl("noDox", Sample),
                           "noDOX", "DOX"),
            type = "WGBS")) %>% 
-    group_by(region, Group, type) %>%
+    group_by(region, Group, type, status) %>%
     summarize(Meth = mean(Meth, na.rm = TRUE))
 
 prop <- bind_rows(prop1, prop2)
 
 prop$Group <- as.factor(prop$Group)
-prop$type <- as.factor(prop$type)
 prop$Group <- factor(prop$Group, levels(prop$Group)[c(2,1)])
+prop$type <- as.factor(prop$type)
 prop$type <- factor(prop$type, levels(prop$type)[c(2,1)])
 
 # plot
-ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
-  scale_fill_manual(values = c("red", "blue")) +
-  geom_boxplot(outlier.shape=NA) + 
+ggplot(prop, aes(x = Group, y = Meth, color =  status)) +
+  scale_color_manual(values = c("darkred", "darkblue")) +
+  geom_boxplot() + 
+  facet_wrap(~ type) +
   theme_classic() + 
-  xlab("Experiment type") +
+  xlab("Treatment") +
   ylab("Average methylation proportion") +
-  ggtitle("DMR : H3K4me3 Peak intersections")
+  labs(color = "Overlap") +
+  ggtitle("DMRs and H3K4me3 Peaks")
 ```
 
 Note that `r signif(100*length(unique(prop1$region))/length(dmrs), 3)`%
-of DMRs overlap with an H3K4Me3 peak. We'll look at how the proportion of 
-overlapping UMRs changes with methylation effect size.
-
-```{r, fig.width = 10}
-seqlevels(peaks.common) <- paste0("chr", seqlevels(peaks.common))
-peaks.chip <- bs.h3k4[findOverlaps(bs.h3k4, peaks.common)@from, ]
-
-# filter both by min coverage of 5 in each condition
-cov.mat <- getCoverage(peaks.chip, type="Cov")
-filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
-filter <- which(filter)
-peaks.chip <- peaks.chip[-filter,]
-
-ol <- findOverlaps(peaks.chip, dmrs)
-ol2 <- findOverlaps(peaks.chip, peaks.common)
-
-prop.peaks <- as.data.frame(getMeth(peaks.chip, type="raw")) 
-
-prop.peaks$region <- NA
-prop.peaks$region[ol@from] <- ol@to
-
-prop.peaks <- prop.peaks %>%
-  mutate(peak = ol2@to) %>% 
-  mutate(delta_mC = DOX - noDOX) %>%
-  group_by(peak) %>%
-  summarize(regions = length(unique(na.omit(region))),
-            delta_mC = mean(delta_mC, na.rm=TRUE)) %>% 
-  mutate(bins = cut(delta_mC, 
-                    breaks = c(min(delta_mC)-0.01,seq(0,max(delta_mC)+0.05,by=0.05)), 
-                    dig.lab = 2)) %>%
-  group_by(bins) %>%
-  summarize(nOverlap = sum(regions > 0),
-            n = n()) %>%
-  mutate(pOverlap = nOverlap / n)
-
-ggplot(prop.peaks, aes(x = bins, y = pOverlap)) +
-  geom_point() +
-  geom_line(aes(group = 1)) +
-  xlab(expression(paste(Delta, "mCG bin"))) +  
-  ylab("Proportion of DMRs overlapping H3K4me3 peaks")
-```
-
+of DMRs overlap with an H3K4Me3 peak. 
 
 ## Figure 3D (RNA Pol II)
 
@@ -1286,6 +1187,7 @@ We'll do the same as in the previous section, but for RNA Pol II data.
 dmrs <- (dmrs <- readRDS(file.path(resdir, "regions.rds")))[dmrs$qval < 0.10, ]
 
 # read in called peaks from macs
+bedfiles <- file.path(datdir, paste0(dataset,"_", grouping, "_peaks.xls"))
 peaks.all <- NULL
 for (bf in bedfiles[grepl("Pol", bedfiles)]){
   # import peak bed files as GRanges
@@ -1306,22 +1208,20 @@ peaks.common <- peaks.all[[1]]
 start(peaks.common) <- pmax(start(peaks.all[[1]]), start(peaks.all[[2]]))
 end(peaks.common) <- pmin(end(peaks.all[[1]]), end(peaks.all[[2]]))
 
-# intersect the UMRs with the peaks
-seqlevels(dmrs) <- gsub("chr", "", seqlevels(dmrs))
-ol <- findOverlaps(peaks.common, dmrs)
-int <- peaks.common[unique(ol@from), ]
+# subset on normalized read count in common peaks
+rse <- summarizeOverlaps(peaks.common, bfL.PolII, mode = "Union")
+assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
+                                 function(x) x / sizeFactors.PolII))
+int <- peaks.common[which(rowSums(assays(rse)$normcounts > 50) == 2)]
+seqlevels(int) <- paste0("chr", seqlevels(int))
 
 # intersect the peak-UMRs with chipbs
-seqlevels(int) <- paste0("chr", seqlevels(int))
-seqlevels(dmrs) <- paste0("chr", seqlevels(dmrs))
-int.chip <- bs.pol[findOverlaps(bs.pol, int)@from, ]
-int.chip <- int.chip[findOverlaps(int.chip, dmrs)@from, ]
-int.wgbs <- bs[findOverlaps(bs, int)@from, ]
-int.wgbs <- int.wgbs[findOverlaps(int.wgbs, dmrs)@from, ]
+int.chip <- bs.pol[findOverlaps(bs.pol, dmrs)@from, ]
+int.wgbs <- bs[findOverlaps(bs, dmrs)@from, ]
 
 # filter both by min coverage of 5 in each condition
 cov.mat <- getCoverage(int.chip, type="Cov")
-filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
+filter <- DelayedMatrixStats::rowSums2(cov.mat > 4) < 2
 filter <- which(filter)
 int.chip <- int.chip[-filter,]
 
@@ -1334,80 +1234,46 @@ rm(cov.mat)
 
 # compute methylation proportions
 prop1 <- as.data.frame(getMeth(int.chip, type="raw")) %>% 
-  mutate(region = findOverlaps(int.chip, dmrs)@to) %>%
+  mutate(region = findOverlaps(int.chip, dmrs, select = "first"),
+         status = ifelse(countOverlaps(int.chip, int) > 0, "PolII Peak", "No Peak")) %>%
   gather("Group", "Meth", 1:2) %>%
   mutate(type = "ChIP-purified") %>% 
-  group_by(region, Group, type) %>%
-  summarize(Meth = mean(Meth, na.rm = TRUE))
+  group_by(region, Group, type, status) %>%
+  summarize(Meth = mean(Meth, na.rm = TRUE)) 
   
 prop2 <-  (as.data.frame(getMeth(int.wgbs, type="raw")) %>% 
-    mutate(region = findOverlaps(int.wgbs, dmrs)@to) %>%
+    mutate(region = findOverlaps(int.wgbs, dmrs, select = "first"),
+           status = ifelse(countOverlaps(int.wgbs, int) > 0, "PolII Peak", "No Peak")) %>%
     gather("Sample", "Meth", 1:6) %>%
     mutate(Group = ifelse(grepl("Vector", Sample) | grepl("noDox", Sample),
                           "noDOX", "DOX"),
            type = "WGBS")) %>% 
-    group_by(region, Group, type) %>%
+    group_by(region, Group, type, status) %>%
     summarize(Meth = mean(Meth, na.rm = TRUE))
 
 prop <- bind_rows(prop1, prop2)
 
 prop$Group <- as.factor(prop$Group)
-prop$type <- as.factor(prop$type)
 prop$Group <- factor(prop$Group, levels(prop$Group)[c(2,1)])
+prop$type <- as.factor(prop$type)
 prop$type <- factor(prop$type, levels(prop$type)[c(2,1)])
+prop$status <- as.factor(prop$status)
+prop$status <- factor(prop$status, levels(prop$status)[c(2,1)])
 
 # plot
-ggplot(prop, aes(x = type, y = Meth, fill = Group)) +
-  scale_fill_manual(values = c("red", "blue")) +
-  geom_boxplot(outlier.shape=NA) + 
+ggplot(prop, aes(x = Group, y = Meth, color =  status)) +
+  scale_color_manual(values = c("darkred", "darkblue")) +
+  geom_boxplot() + 
+  facet_wrap(~ type) +
   theme_classic() + 
-  xlab("Experiment type") +
+  xlab("Treatment") +
   ylab("Average methylation proportion") +
-  ggtitle("DMR : RNA PolII Peak intersections")
+  labs(color = "Overlap") +
+  ggtitle("DMRs and RNA PolII Peaks")
 ```
 
 Note that `r signif(100*length(unique(prop1$region))/length(dmrs), 3)`%
-of UMRs overlap with an RNA PolII peak. We'll look at how the proportion of 
-overlapping UMRs changes with methylation effect size.
-
-```{r, fig.width = 10}
-seqlevels(peaks.common) <- paste0("chr", seqlevels(peaks.common))
-peaks.chip <- bs.pol[findOverlaps(bs.pol, peaks.common)@from, ]
-
-# filter both by min coverage of 5 in each condition
-cov.mat <- getCoverage(peaks.chip, type="Cov")
-filter <- DelayedMatrixStats::rowSums2(cov.mat > 10) < 2
-filter <- which(filter)
-peaks.chip <- peaks.chip[-filter,]
-
-ol <- findOverlaps(peaks.chip, dmrs)
-ol2 <- findOverlaps(peaks.chip, peaks.common)
-
-prop.peaks <- as.data.frame(getMeth(peaks.chip, type="raw")) 
-
-prop.peaks$region <- NA
-prop.peaks$region[ol@from] <- ol@to
-
-prop.peaks <- prop.peaks %>%
-  mutate(peak = ol2@to) %>% 
-  mutate(delta_mC = DOX - noDOX) %>%
-  group_by(peak) %>%
-  summarize(regions = length(unique(na.omit(region))),
-            delta_mC = mean(delta_mC, na.rm=TRUE)) %>% 
-  mutate(bins = cut(delta_mC, 
-                    breaks = c(min(delta_mC)-0.01,seq(0,max(delta_mC)+0.05,by=0.05)), 
-                    dig.lab = 2)) %>%
-  group_by(bins) %>%
-  summarize(nOverlap = sum(regions > 0),
-            n = n()) %>%
-  mutate(pOverlap = nOverlap / n)
-
-ggplot(prop.peaks, aes(x = bins, y = pOverlap)) +
-  geom_point() +
-  geom_line(aes(group = 1)) +
-  xlab(expression(paste(Delta, "mCG bin"))) +  
-  ylab("Proportion of DMRs overlapping RNA PolII peaks")
-```
+of UMRs overlap with an RNA PolII peak. 
 
 # Session Information
 
