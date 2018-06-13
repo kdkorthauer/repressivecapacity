@@ -599,8 +599,10 @@ ts3.h <- ts3 %>%
          delta_mC_orig = methylation_level_in_ZF_D3A_plus_dox - methylation_level_in_MCF7_control,
          delta_mC = md,
          FC = chip.dox / chip.ctrl,
-         FC.norm = chip.dox.norm / chip.ctrl.norm ) %>%
-  filter(chip.dox.norm + chip.ctrl.norm > 50)
+         FC.norm = chip.dox.norm / chip.ctrl.norm,
+         bin = cut(delta_mC, c(0,0.1,0.2,0.3,0.4,0.5,0.6,1))) %>%
+  filter(chip.dox.norm + chip.ctrl.norm > 50) %>%
+  filter(!is.na(delta_mC))
 ```
 
 Next, we construct the scatter plot of methylation change in UMRs versus normalized
@@ -631,6 +633,26 @@ ggplot(ts3.h %>% filter(delta_mC > 0), aes(y = FC.norm, x = delta_mC)) +
   ggtitle("Normalized ChIP-BS read counts") +
   geom_smooth()
 ggsave(file.path(plotdir, "mCG_vs_H3K4me3_scatter_UMR.pdf"))
+
+# boxplot version
+n_fun <- function(x){
+  return(data.frame(y = log2(0.12), 
+                    label = paste0("(n = ", scales::comma(length(x)), ")")))
+}
+
+ggplot(ts3.h %>% filter(delta_mC > 0), 
+       aes(y = FC.norm, x = bin)) +
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text") +
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG bin in UMR (dox - no dox)"))) +
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)")  +
+  geom_point(data = ts3.h %>% filter(bin == "(0.6,1]"), position="jitter",
+             color = "grey")
+ggsave(file.path(plotdir, "mCG_vs_H3K4me3_bins_UMR.pdf"))
 ```
 
 The figure is similar in spirit to the one in the paper, but the one in the paper
@@ -668,8 +690,10 @@ ts3.p <- ts3 %>%
          chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
          delta_mC = methylation_level_in_ZF_D3A_plus_dox - methylation_level_in_MCF7_control,
          FC.norm = chip.dox.norm / chip.ctrl.norm,
-         FC = chip.dox / chip.ctrl) %>%
-  filter(chip.dox.norm + chip.ctrl.norm > 50)
+         FC = chip.dox / chip.ctrl,
+         bin = cut(delta_mC, c(0,0.1,0.2,0.3,0.4,0.5,0.6,1))) %>%
+  filter(chip.dox.norm + chip.ctrl.norm > 50) %>%
+  filter(!is.na(delta_mC))
 ```
 
 Next, we construct the scatter plot of methylation change in UMRs versus normalized
@@ -702,6 +726,22 @@ ggplot(ts3.p %>% filter(delta_mC > 0),
   ggtitle("Normalized ChIP-BS read counts") +
   geom_smooth() 
 ggsave(file.path(plotdir, "mCG_vs_RNApolII_scatter_UMR.pdf"))
+
+
+#boxplot version
+ggplot(ts3.p %>% filter(delta_mC > 0), 
+       aes(y = FC.norm, x = bin)) +
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text") +
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG bin in UMR (dox - no dox)"))) +
+  ylab("RNA PolII readcount Fold Change (dox/no dox)") +
+  geom_point(data = ts3.p %>% filter(bin == "(0.6,1]"), position="jitter",
+             color = "grey")
+ggsave(file.path(plotdir, "mCG_vs_RNApolII_bins_UMR.pdf"))
 ```
 
 # Figure 3C for DMRs instead of UMRs
@@ -743,7 +783,9 @@ dmrs.chip <- data.frame(dmrs) %>%
          chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
          chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
          FC = chip.dox / chip.ctrl,
-         FC.norm = chip.dox.norm / chip.ctrl.norm) %>%
+         FC.norm = chip.dox.norm / chip.ctrl.norm,
+         bin = cut(meanDiff, c(0,0.2,0.3,0.4,0.5,0.6,1)),
+         binS = cut(stat, c(0,8,9,10,12,15,20,25,46))) %>%
   filter(chip.dox.norm + chip.ctrl.norm > 50)
 ```
 
@@ -764,6 +806,25 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   ggtitle("Normalized ChIP-BS read counts") +
   geom_smooth()
 ggsave(file.path(plotdir, "mCG_vs_H3K4me3_scatter_DMR.pdf"))
+
+# boxplot version
+n_fun <- function(x){
+  return(data.frame(y = log2(0.08), 
+                    label = paste0("(n = ", scales::comma(length(x)), ")")))
+}
+ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+       aes(y = FC.norm, x = bin)) +
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text") +
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG bin in DMR (dox - no dox)"))) +
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)")  +
+  geom_point(data = dmrs.chip %>% filter(bin == "(0.6,1]"), position="jitter",
+             color = "grey")
+ggsave(file.path(plotdir, "mCG_vs_H3K4me3_bins_DMR.pdf"))
 ```
 
 Now we'll make a similar plot, but with the DMR significance on the x-axis instead
@@ -785,6 +846,23 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   geom_smooth() + 
   theme(legend.position = "none")
 ggsave(file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR.pdf"))
+
+# boxplot version
+n_fun <- function(x){
+  return(data.frame(y = log2(0.08), 
+                    label = paste0("(n = ", scales::comma(length(x)), ")")))
+}
+ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+       aes(y = FC.norm, x = binS)) +
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text") +
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab("dmrseq statistic bin (dox - no dox)") +
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)")  
+ggsave(file.path(plotdir, "stat_vs_H3K4me3_bins_DMR.pdf"))
 ```
 
 ## Remake Figure 3C for DNA PolII data
@@ -819,7 +897,9 @@ dmrs.chip <- data.frame(dmrs) %>%
          chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
          chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
          FC = chip.dox / chip.ctrl,
-         FC.norm = chip.dox.norm / chip.ctrl.norm) %>%
+         FC.norm = chip.dox.norm / chip.ctrl.norm,
+         bin = cut(meanDiff, c(0,0.2,0.3,0.4,0.5,0.6,1)),
+         binS = cut(stat, c(0,8,9,10,12,15,20,25,46))) %>%
   filter(chip.dox.norm + chip.ctrl.norm > 50)
 
 ```
@@ -842,6 +922,25 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   xlim(0.07,0.75) +
   geom_smooth()
 ggsave(file.path(plotdir, "mCG_vs_RNApolII_scatter_DMR.pdf"))
+
+# boxplot version
+n_fun <- function(x){
+  return(data.frame(y = log2(0.08), 
+                    label = paste0("(n = ", scales::comma(length(x)), ")")))
+}
+ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+       aes(y = FC.norm, x = bin)) +
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text") +
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab(expression(paste(Delta, "mCG bin in DMR (dox - no dox)"))) +
+  ylab("RNA PolII readcount Fold Change (dox/no dox)")  +
+  geom_point(data = dmrs.chip %>% filter(bin == "(0.6,1]"), position="jitter",
+             color = "grey")
+ggsave(file.path(plotdir, "mCG_vs_RNApolII_bins_DMR.pdf"))
 ```
 
 Now we'll make a similar plot, but with the DMR significance on the x-axis instead
@@ -863,6 +962,23 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   geom_smooth() + 
   theme(legend.position = "none")
 ggsave(file.path(plotdir, "stat_vs_RNApolII_scatter_DMR.pdf"))
+
+# boxplot version
+n_fun <- function(x){
+  return(data.frame(y = log2(0.08), 
+                    label = paste0("(n = ", scales::comma(length(x)), ")")))
+}
+ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+       aes(y = FC.norm, x = binS)) +
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text") +
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab("dmrseq statistic bin (dox - no dox)") +
+  ylab("RNA PolII readcount Fold Change (dox/no dox)")  
+ggsave(file.path(plotdir, "stat_vs_RNApolII_bins_DMR.pdf"))
 ```
 
 # Reproduce Figure 5D and E
@@ -1097,10 +1213,6 @@ methboxplots <- function(condition = c("H3K4", "PolII"),
     baseregions <- paste0(condition, " ", baseregions)
   }else{
     complab <- paste0(condition, " Peaks")
-  }
-  
-  give.n <- function(x){
-     return(c(y = -0.05, label = length(x)))
   }
   
   ndat <- prop %>% 
