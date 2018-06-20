@@ -427,7 +427,7 @@ exp <- exp[!allZero,]
 
 # strings to match the two comparison samples - control and ZF + DOX
 ctrl <- "MCF7_emptyVector|MCF7_ZF_DNMT3A_noDOX_rep"
-trt <- "MCF7_ZF_DNMT3A_DOX_rep"
+trt <- "MCF7_ZF_DNMT3A_DOX"
 
 # set up colData
 coldata <- data.frame(sample=colnames(exp)) %>%
@@ -437,52 +437,38 @@ coldata <- data.frame(sample=colnames(exp)) %>%
 dds <- DESeqDataSetFromMatrix(countData = exp,
                               colData = coldata,
                               design = ~ condition)
-dds <- dds[, dds$condition != "Other"]
-dds$condition <- droplevels(dds$condition)
-dds <- estimateSizeFactors(dds)
 
 # plot distribution of expression values
 exp <- data.frame(counts(dds)) %>% 
   mutate(gene = rownames(dds)) %>%
   gather(sample, count, 1:19) %>% 
-  mutate(normcount = (data.frame(counts(dds, normalize=TRUE)) %>% 
-           gather(sample, count))$count) %>%
   mutate(condition = ifelse(grepl(ctrl, sample), "Control", "Methylated")) %>%
   mutate(dox = ifelse(grepl("noDOX", sample), "No Dox", 
                       ifelse(grepl("DOXremoval", sample), "Dox withdrawal", 
                              "Dox")))
   
 ggplot(exp, aes(x=count+1, group=sample, color=condition)) +
-  geom_density(adjust=0.75, lwd=0.6, aes(linetype=dox)) +
+  geom_line(stat="density", adjust=0.75, lwd=1, aes(linetype=dox), alpha=0.5) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of raw counts")
-
-ggplot(exp, aes(x=normcount+1, group=sample, color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of normalized counts")
 
 # collapse over samples of the same dox/condition 
 ggplot(exp, aes(x=count+1, group=interaction(dox, condition), color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
+  geom_line(stat = "density", adjust=0.75, aes(linetype=dox), alpha = 0.5, lwd=1) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of raw counts")
 
-ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of normalized counts")
-
+dds <- dds[, !( dds$condition == "Methylated" & grepl("removal", dds$sample))]
+dds$condition <- droplevels(dds$condition)
 ```
 
 Since we observe global shifts in the expected
 direction (i.e. lower expression for the methylated condition), we will not perform
 standard normalization. Instead, we'll compute size factors only on genes that
-were at least 10kb awar from a ZF binding site or significant DMR (by dmrseq).
+were at least 20kb away from a ZF binding site or putative DMR (by dmrseq, with
+FDR level 0.25).
 To find these genes, we'll use the ZF ChIP-seq binding
 site data from the Supplementary table S1.
 
@@ -497,19 +483,24 @@ colnames(ts1) <- c("chr", "start", "end", "closest_gene_promoter",
                    "enhancer_classification")
 
 annot = build_annotations(genome = 'hg19', annotations = 'hg19_genes_promoters')
-ol <- distanceToNearest(regions[regions$qval < fdrlevel.dmr,], annot)
-dmr_genes <- annot$symbol[ol@to[mcols(ol)$distance <= 10000]]
+ol <- distanceToNearest(regions[regions$qval < 0.25,], annot)
+ol2 <- findOverlaps(regions[regions$qval < 0.25,], annot)
+dmr_genes <- unique(c(annot$symbol[ol@to[mcols(ol)$distance <= 20000]],
+                      annot$symbol[ol2@to]))
+dmr_genes <- dmr_genes[!is.na(dmr_genes)]
 
-norm_genes <- (ts1 %>%
-  filter(distance_to_nearest_promoter > 10000) %>%
-  filter(!(closest_gene_promoter%in% dmr_genes)))$closest_gene_promoter
+zf_genes <- (ts1 %>%
+  filter(distance_to_nearest_promoter <= 20000))$closest_gene_promoter
+
+norm_genes <- unique((exp %>%
+  filter(!(gene %in% unique(c(dmr_genes, zf_genes)))))$gene)
 
 exp <- exp %>% 
   mutate(normg = ifelse(gene %in% norm_genes, "Background Gene", "ZF-bound Gene"))
 
 ggplot(exp %>% filter(dox != "Dox withdrawal"), 
        aes(x=count+1, group=interaction(normg, condition), color=normg)) +
-  geom_density(adjust=0.75, lwd=0.6, aes(linetype=condition)) +
+  geom_line(stat = "density", alpha =0.5, adjust=0.75, lwd=1, aes(linetype=condition)) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of raw counts") 
@@ -541,14 +532,14 @@ exp <- data.frame(counts(dds)) %>%
   mutate(dox = ifelse(grepl("noDOX", sample), "No Dox","Dox"))
 
 ggplot(exp, aes(x=normcount+1, group=sample, color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
+  geom_line(stat="density", alpha = 0.5, lwd=1, adjust=0.75, aes(linetype=dox)) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of normalized counts")
 
 # collapse over samples of the same dox/condition 
 ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
+  geom_line(stat = "density", lwd = 1, alpha = 0.5, adjust=0.75, aes(linetype=dox)) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of normalized counts")
@@ -617,7 +608,7 @@ dmrs <- dmrs[!is.na(x),]
 x <- x[!is.na(x)]
 res.dmrs <- res[x,]
 
-dmrs <- cbind(dmrs, res.dmrs)
+dmrs <- cbind(DataFrame(dmrs), res.dmrs)
 ```
 
 ## Figure 5A for UMRs
@@ -647,7 +638,7 @@ ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
-  ggtitle("DSS DMRs") +
+  ggtitle("UMRs") +
   ylim(-5,6)
 ```
 
@@ -673,7 +664,7 @@ ggplot(dmrsb, aes(FCcat, fill = color)) +
   scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
   xlab("mRNA fold change") +
   ylab("Number of genes") +
-  ggtitle("All Gene - DSS DMR Pairs") + 
+  ggtitle("All Gene - UMR Pairs") + 
   annotate("text", x = 6, y = 650, label = paste0("n=",nrow(dmrsb))) +
   labs(fill="Direction \nof effect")
 ```
@@ -754,7 +745,7 @@ dmrs <- dmrs[!is.na(x),]
 x <- x[!is.na(x)]
 res.dmrs <- res[x,]
 
-dmrs <- cbind(dmrs, res.dmrs)
+dmrs <- cbind(DataFrame(dmrs), res.dmrs)
 ```
 
 ## Figure 5A for DSS DMRs
@@ -771,7 +762,8 @@ dmrsa <- data.frame(dmrs@listData) %>%
   mutate(ABin = ntile(A, 9)) %>%
   filter(!is.na(log2FoldChange) & !is.na(sig)) 
 
-ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
+ggplot(dmrsa %>% filter(delta_mC > 0), 
+       aes(x = delta_mC, y = log2FoldChange)) +
   geom_hline(yintercept=0, col="black") +
   geom_hline(yintercept=0, col="white", linetype="dashed") +
   geom_point(size=0.5, alpha=0.75, aes(color = sig)) + 
@@ -890,7 +882,7 @@ dmrs <- dmrs[!is.na(x),]
 x <- x[!is.na(x)]
 res.dmrs <- res[x,]
 
-dmrs <- cbind(dmrs, res.dmrs)
+dmrs <- cbind(DataFrame(dmrs), res.dmrs)
 ```
 
 ## Figure 5A for dmrseq DMRs
@@ -1150,7 +1142,7 @@ B2 <- ggplot(dmrsc %>%
   ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
   labs(fill="Direction \nof effect") +
   xlim(-3,3) +
-  ylim(0,316)
+  ylim(0,329)
 B2
 # save plot for mutlipanel figure
 saveRDS(B2, file="../plots/B2.rds")
