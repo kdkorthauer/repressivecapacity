@@ -467,7 +467,7 @@ dds$condition <- droplevels(dds$condition)
 Since we observe global shifts in the expected
 direction (i.e. lower expression for the methylated condition), we will not perform
 standard normalization. Instead, we'll compute size factors only on genes that
-were at least 20kb away from a ZF binding site or putative DMR (by dmrseq, with
+were at least 10kb away from a ZF binding site or putative DMR (by dmrseq, with
 FDR level 0.25).
 To find these genes, we'll use the ZF ChIP-seq binding
 site data from the Supplementary table S1.
@@ -485,12 +485,12 @@ colnames(ts1) <- c("chr", "start", "end", "closest_gene_promoter",
 annot = build_annotations(genome = 'hg19', annotations = 'hg19_genes_promoters')
 ol <- distanceToNearest(regions[regions$qval < 0.25,], annot)
 ol2 <- findOverlaps(regions[regions$qval < 0.25,], annot)
-dmr_genes <- unique(c(annot$symbol[ol@to[mcols(ol)$distance <= 20000]],
+dmr_genes <- unique(c(annot$symbol[ol@to[mcols(ol)$distance <= 10000]],
                       annot$symbol[ol2@to]))
 dmr_genes <- dmr_genes[!is.na(dmr_genes)]
 
 zf_genes <- (ts1 %>%
-  filter(distance_to_nearest_promoter <= 20000))$closest_gene_promoter
+  filter(distance_to_nearest_promoter <= 10000))$closest_gene_promoter
 
 norm_genes <- unique((exp %>%
   filter(!(gene %in% unique(c(dmr_genes, zf_genes)))))$gene)
@@ -1063,6 +1063,47 @@ saveRDS(A2, file="../plots/A2.rds")
 ```
 
 From this figure it is much more clear that most DE genes are down-regulated.
+
+
+### Explore highly significant pairs
+
+```{r}
+gtab <- table(dmrsa$gene)
+dmrsh <- dmrsa %>%
+  mutate(n = unname(gtab[gene])) %>%
+  filter(abs(log2FoldChange) > 1.5) %>%
+  filter(stat > 10) %>%
+  dplyr::select(X.seqnames, X.start, X.end, X.gene, X.width, X.L, X.stat,
+         X.qval, meanDiff, baseMean, log2FoldChange, padj) %>%
+  mutate(direction = ifelse(log2FoldChange > 0, "Positive", "Negative"),
+         subjectHits = 1:n())
+
+ggplot(dmrsh, aes(x= baseMean, y =log2FoldChange)) + 
+  geom_point() +
+  scale_x_continuous(trans ="log10") +
+  theme_bw()
+  
+ol <- findOverlaps(bs, makeGRangesFromDataFrame(dmrsh))
+mm <- getMeth(bs[ol@from,], type="raw")
+sds <- rowSds(mm, na.rm=TRUE)
+intermed <- apply(mm, 1, function(x) sum(x > 0.25 | x < 0.75)/length(x))
+
+ol <- data.frame(ol) %>%
+  mutate(sds = sds) %>%
+  group_by(subjectHits) %>%
+  summarize(mean_sd = mean(sds))
+dmrsh <- left_join(dmrsh, ol, by = "subjectHits")
+
+ggplot(dmrsh, aes(x= mean_sd, y =log2FoldChange)) + 
+  geom_point() +
+  scale_x_continuous(trans ="log10") +
+  theme_bw()
+
+table(dmrsh$log2FoldChange > 0)
+
+# for each of these, compute 
+```
+
 
 ## Alternate versions of Figure 5B for dmrseq DMRs
 
