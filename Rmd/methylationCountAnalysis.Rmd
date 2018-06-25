@@ -514,11 +514,16 @@ looks very similar to the methylated group, and the dox withdrawal group has hig
 expression (but withdrawal and no dox groups are in opposite order).
 
 Going forward, we'll use only the no dox control versus the dox methylated group
-for the DE comparison. 
+for the DE comparison. We'll also remove genes with very low expression overall
+(at least 10 total reads summed across all samples, and at least half of the 
+samples overall with nonzero expression).
+
 
 ```{r, deseq}
 dds <- dds[, dds$condition == "Methylated" | 
              (dds$condition == "Control" & grepl("noDOX", dds$sample)) ]
+dds <- dds[rowSums(counts(dds)) >= 10,]
+dds <- dds[rowSums(counts(dds)==0) <= 0.5,]
 dds <- estimateSizeFactors(dds, 
                            controlGenes = rownames(dds) %in% norm_genes)
 
@@ -532,14 +537,14 @@ exp <- data.frame(counts(dds)) %>%
   mutate(dox = ifelse(grepl("noDOX", sample), "No Dox","Dox"))
 
 ggplot(exp, aes(x=normcount+1, group=sample, color=condition)) +
-  geom_line(stat="density", alpha = 0.5, lwd=1, adjust=0.75, aes(linetype=dox)) +
+  geom_line(stat="density", alpha = 0.5, lwd=1, adjust=0.75) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of normalized counts")
 
 # collapse over samples of the same dox/condition 
 ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
-  geom_line(stat = "density", lwd = 1, alpha = 0.5, adjust=0.75, aes(linetype=dox)) +
+  geom_line(stat = "density", lwd = 1, alpha = 0.5, adjust=0.75) +
   scale_x_continuous(trans="log2") +
   theme_bw() + 
   ggtitle("Smoothed density of normalized counts")
@@ -548,6 +553,7 @@ dds <- DESeq(dds)
 res <- results(dds)
 
 sum(res$padj < fdrlevel.de, na.rm = TRUE)
+dds <- dds[!is.na(res$padj)]
 res <- res %>% na.omit()
 ```
 
@@ -692,7 +698,7 @@ dmrsc <- dmrsa %>%
 ggplot(dmrsc, aes(FCcat, fill = color)) +
   geom_bar() + 
   facet_wrap( ~ sig) +
-  geom_vline(xintercept = 5.5, linetype = "dashed") +
+  geom_vline(xintercept = 4.5, linetype = "dashed") +
   theme_bw() + 
   scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
   xlab("mRNA fold change") + 
@@ -829,7 +835,7 @@ dmrsc <- dmrsa %>%
 ggplot(dmrsc, aes(FCcat, fill = color)) +
   geom_bar() + 
   facet_wrap( ~ sig) +
-  geom_vline(xintercept = 5.5, linetype = "dashed") +
+  geom_vline(xintercept = 4.5, linetype = "dashed") +
   theme_bw() + 
   scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
   xlab("mRNA fold change") + 
@@ -877,6 +883,10 @@ to the DMR data frame.
 
 ```{r}
 # add DE results
+baseMeanPerLvl <- sapply( levels(dds$condition), 
+                          function(lvl) 
+                            rowMeans(counts(dds,normalized=TRUE)[,dds$condition == lvl] ))
+res <- cbind(res, baseMeanPerLvl)
 x <- match(dmrs$gene, rownames(res)) 
 dmrs <- dmrs[!is.na(x),]
 x <- x[!is.na(x)]
@@ -967,7 +977,7 @@ dmrsc <- dmrsa %>%
 ggplot(dmrsc, aes(FCcat, fill = color)) +
   geom_bar() + 
   facet_wrap( ~ sig) +
-  geom_vline(xintercept = 5.5, linetype = "dashed") +
+  geom_vline(xintercept = 4.5, linetype = "dashed") +
   theme_bw() + 
   scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
   xlab("mRNA fold change") + 
@@ -1031,12 +1041,12 @@ ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
   ggtitle("dmrseq DMRs") +
-  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.005]), 
              linetype="dashed", color="grey20")
 ```
 
 
-```{r, extraplots, eval=FALSE, echo=FALSE}
+```{r, extraplots}
 
 A2 <- ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   geom_hline(yintercept=0, col="black") +
@@ -1071,37 +1081,65 @@ From this figure it is much more clear that most DE genes are down-regulated.
 gtab <- table(dmrsa$gene)
 dmrsh <- dmrsa %>%
   mutate(n = unname(gtab[gene])) %>%
-  filter(abs(log2FoldChange) > 1.5) %>%
-  filter(stat > 10) %>%
+ # filter(abs(log2FoldChange) > 1.5) %>%
+#  filter(stat > 10) %>%
   dplyr::select(X.seqnames, X.start, X.end, X.gene, X.width, X.L, X.stat,
-         X.qval, meanDiff, baseMean, log2FoldChange, padj) %>%
+         X.qval, meanDiff, baseMean, log2FoldChange, padj, index.start, 
+         index.end, Control, Methylated) %>%
   mutate(direction = ifelse(log2FoldChange > 0, "Positive", "Negative"),
-         subjectHits = 1:n())
+         subjectHits = 1:n(),
+         sig = padj < 0.05 & X.qval < 0.10)
 
-ggplot(dmrsh, aes(x= baseMean, y =log2FoldChange)) + 
-  geom_point() +
+ggplot(dmrsh, aes(x= baseMean, y =log2FoldChange, color = sig)) + 
+  geom_point(alpha = 0.5 ) +
   scale_x_continuous(trans ="log10") +
-  theme_bw()
-  
-ol <- findOverlaps(bs, makeGRangesFromDataFrame(dmrsh))
-mm <- getMeth(bs[ol@from,], type="raw")
-sds <- rowSds(mm, na.rm=TRUE)
-intermed <- apply(mm, 1, function(x) sum(x > 0.25 | x < 0.75)/length(x))
+  scale_color_manual(values = c("black", "red")) +
+  theme_bw() +
+  xlab("Average Expression")
 
-ol <- data.frame(ol) %>%
-  mutate(sds = sds) %>%
-  group_by(subjectHits) %>%
-  summarize(mean_sd = mean(sds))
-dmrsh <- left_join(dmrsh, ol, by = "subjectHits")
-
-ggplot(dmrsh, aes(x= mean_sd, y =log2FoldChange)) + 
-  geom_point() +
+ggplot(dmrsh, aes(x= Control+1, y =log2FoldChange, color = sig)) + 
+  geom_point(alpha = 0.5 ) +
   scale_x_continuous(trans ="log10") +
+  scale_color_manual(values = c("black", "red")) +
+  theme_bw() +
+  xlab("Expression in control group")
+
+indexRanges <- IRanges(dmrsh$index.start, dmrsh$index.end)
+prop.mat.dmr <- extractROWS(getMeth(bs, type="raw"), indexRanges)
+prop.C <- IRanges::relist(prop.mat.dmr[,pData(bs)$condition=="Control"], indexRanges)
+prop.M <- IRanges::relist(prop.mat.dmr[,pData(bs)$condition=="Methylated"], indexRanges)
+varC <- unlist(lapply(prop.C, function(x) 
+               max(DelayedMatrixStats::colSds(x, na.rm=TRUE))))
+varM <- unlist(lapply(prop.M, function(x) 
+               max(DelayedMatrixStats::colSds(x, na.rm=TRUE))))
+dmrsh <- dmrsh %>%
+  mutate(varC = varC, varM = varM)
+
+ggplot(dmrsh, aes(x = varC, y = varM, color = sig)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("black", "red")) +
   theme_bw()
 
-table(dmrsh$log2FoldChange > 0)
+ggplot(dmrsh, aes(x= varC, y =log2FoldChange, color = sig)) + 
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("black", "red")) +
+  xlab("Intra-sample variation of control samples") +
+  theme_bw()
 
-# for each of these, compute 
+ggplot(dmrsh, aes(x= varM, y =log2FoldChange, color = sig)) + 
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("black", "red")) +
+  xlab("Intra-sample variation of treated samples") +
+  theme_bw()
+
+ggplot(dmrsh, aes(x= varM+varC, y =log2FoldChange, color = sig)) + 
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("black", "red")) +
+  xlab("Intra-sample variation of both sample types") +
+  theme_bw()
+
+table(dmrsh$log2FoldChange > 0, dmrsh$sig)
+
 ```
 
 
@@ -1159,7 +1197,7 @@ ggplot(dmrsc, aes(FCcat, fill = color)) +
   labs(fill="Direction \nof effect")
 ```
 
-```{r, extraplots2, eval=FALSE, echo=FALSE}
+```{r, extraplots2}
 ggplot(dmrsc %>% filter(sig == "Differentially Expressed"), 
              aes(FCcat, fill = color)) +
   geom_bar() + 

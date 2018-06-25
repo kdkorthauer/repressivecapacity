@@ -794,7 +794,7 @@ difference in H3K4me3 ChIP-Seq normalized read counts.
 
 ```{r, fig3c-dmrs}
 # normalized
-ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+f2a <- ggplot(dmrs.chip %>% filter(meanDiff > 0), 
        aes(y = FC.norm, x = meanDiff)) +
   geom_point(size=0.5, alpha=0.75) + 
   geom_hline(yintercept=1, col="black") +
@@ -805,7 +805,10 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
   ggtitle("Normalized ChIP-BS read counts") +
   geom_smooth()
+f2a
 ggsave(file.path(plotdir, "mCG_vs_H3K4me3_scatter_DMR.pdf"))
+saveRDS(f2a, file.path(plotdir, "mCG_vs_H3K4me3_scatter_DMR.rds"))
+
 
 # boxplot version
 n_fun <- function(x){
@@ -832,7 +835,7 @@ of methylation difference effect size.
 
 ```{r, fig3c-dmrs-stat}
 # normalized
-ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+f2b <- ggplot(dmrs.chip %>% filter(meanDiff > 0), 
        aes(y = FC.norm, x = stat)) +
   geom_point(size=0.5, alpha=0.75, aes(color = qval < 0.01)) + 
   geom_hline(yintercept=1, col="black") +
@@ -845,7 +848,9 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   ggtitle("Normalized ChIP-BS read counts") +
   geom_smooth() + 
   theme(legend.position = "none")
+f2b
 ggsave(file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR.pdf"))
+saveRDS(f2b, file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR.rds"))
 
 # boxplot version
 n_fun <- function(x){
@@ -909,7 +914,7 @@ difference in RNA PolII ChIP-Seq normalized read counts.
 
 ```{r, fig3c-dmrs-pol2}
 # normalized
-ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+f2c <- ggplot(dmrs.chip %>% filter(meanDiff > 0), 
        aes(y = FC.norm, x = meanDiff)) +
   geom_point(size=0.5, alpha=0.75) + 
   geom_hline(yintercept=1, col="black") +
@@ -921,7 +926,9 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   ggtitle("Normalized ChIP-BS read counts") +
   xlim(0.07,0.75) +
   geom_smooth()
+f2c 
 ggsave(file.path(plotdir, "mCG_vs_RNApolII_scatter_DMR.pdf"))
+saveRDS(f2c, file.path(plotdir, "mCG_vs_RNApolII_scatter_DMR.rds"))
 
 # boxplot version
 n_fun <- function(x){
@@ -948,7 +955,7 @@ of methylation difference effect size.
 
 ```{r, fig3c-dmrs-stat-pol2}
 # normalized
-ggplot(dmrs.chip %>% filter(meanDiff > 0), 
+f2d <- ggplot(dmrs.chip %>% filter(meanDiff > 0), 
        aes(y = FC.norm, x = stat)) +
   geom_point(size=0.5, alpha=0.75, aes(color = qval < 0.01)) + 
   geom_hline(yintercept=1, col="black") +
@@ -961,7 +968,10 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   ggtitle("Normalized ChIP-BS read counts") +
   geom_smooth() + 
   theme(legend.position = "none")
+f2d
 ggsave(file.path(plotdir, "stat_vs_RNApolII_scatter_DMR.pdf"))
+saveRDS(f2d, file.path(plotdir, "stat_vs_RNApolII_scatter_DMR.rds"))
+
 
 # boxplot version
 n_fun <- function(x){
@@ -1281,10 +1291,13 @@ that overlap a DMR.
 ```{r, fig3d-dmrs, fig.height=4, fig.width=7}
 dmrs <- (dmrs <- readRDS(file.path(resdir, "regions.rds")))[dmrs$qval < 0.10, ]
 
-methboxplots(condition = "H3K4", baseregions = "Peak", compareregionsLabel = "DMRs",
+f3A <- methboxplots(condition = "H3K4", baseregions = "Peak", compareregionsLabel = "DMRs",
              compareregions = dmrs, bamfilelist = bfL.H3K4, filterPeaksByCoverage = TRUE,
              readfilter = 100)
+f3A
 ggsave(file.path(plotdir, "mCG_H3K4me3_boxplot_byDMR.pdf"), width = 7, height = 3.5)
+saveRDS(f3A, file.path(plotdir, "mCG_H3K4me3_boxplot_byDMR.rds"))
+
 
 methboxplots(condition = "H3K4", baseregions = "DMR", compareregionsLabel = "DMRs",
              compareregions = dmrs, bamfilelist = bfL.H3K4, filterPeaksByCoverage = TRUE,
@@ -1300,10 +1313,12 @@ We'll do the same as in the previous section, but for RNA Pol II data.
 ```{r, fig3d-pol-dmrs, fig.height=4, fig.width=7}
 dmrs <- (dmrs <- readRDS(file.path(resdir, "regions.rds")))[dmrs$qval < 0.10, ]
 
-methboxplots(condition = "PolII", baseregions = "Peak", compareregionsLabel = "DMRs",
+f3b <- methboxplots(condition = "PolII", baseregions = "Peak", compareregionsLabel = "DMRs",
              compareregions = dmrs, bamfilelist = bfL.PolII, filterPeaksByCoverage = TRUE,
              readfilter = 25)
+f3b
 ggsave(file.path(plotdir, "mCG_RNApolII_boxplot_byDMR.pdf"), width = 7, height = 3.5)
+saveRDS(f3b, file.path(plotdir, "mCG_RNApolII_boxplot_byDMR.rds"))
 
 methboxplots(condition = "PolII", baseregions = "DMR", compareregionsLabel = "DMRs",
              compareregions = dmrs, bamfilelist = bfL.PolII, filterPeaksByCoverage = TRUE,

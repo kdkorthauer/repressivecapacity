@@ -228,7 +228,7 @@ ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
 
 ```
 
-```{r, extraplot2, eval=FALSE, echo = FALSE}
+```{r, extraplot2}
 A1 <- ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
   geom_hline(yintercept=0, col="black") +
   geom_hline(yintercept=0, col="white", linetype="dashed") +
@@ -426,8 +426,8 @@ ggplot(ts4c, aes(FCcat, fill = color)) +
   labs(fill="Direction \nof effect")
 ```
 
-```{r, extraplots1, eval=FALSE, echo=FALSE}
-B1 <- ggplot(ts4c , #%>% filter(sig==TRUE), 
+```{r, extraplots1}
+B1 <- ggplot(ts4c , 
              aes(log2FC_RNAseq, fill = color)) +
   geom_histogram(breaks=seq(-3,3, by=1/5))+ 
   theme_bw() + 
@@ -443,7 +443,7 @@ B1
 # save plot for mutlipanel figure
 saveRDS(B1, file="../plots/B1.rds")
 
-B1 <- ggplot(ts4c , #%>% filter(sig==TRUE), 
+B1 <- ggplot(ts4c , 
              aes(log2FC_RNAseq)) +
   geom_histogram(breaks=seq(-3,3, by=1/5), aes(y=..density..))+ 
   theme_bw() + 
