@@ -526,28 +526,52 @@ dds <- dds[rowSums(counts(dds)) >= 10,]
 dds <- dds[rowSums(counts(dds)==0) <= 0.5,]
 dds <- estimateSizeFactors(dds, 
                            controlGenes = rownames(dds) %in% norm_genes)
+dds_global <- estimateSizeFactors(dds)
 
 # check resulting distributions after normalization
 exp <- data.frame(counts(dds)) %>% 
   mutate(gene = rownames(dds)) %>%
   gather(sample, count, 1:ncol(dds)) %>% 
+  mutate(count = (data.frame(counts(dds, normalize=FALSE)) %>% 
+         gather(sample, count))$count) %>%
   mutate(normcount = (data.frame(counts(dds, normalize=TRUE)) %>% 
          gather(sample, count))$count) %>%
-  mutate(condition = ifelse(grepl(ctrl, sample), "Control", "Methylated")) %>%
+  mutate(normcount_global = (data.frame(counts(dds_global, normalize=TRUE)) %>% 
+         gather(sample, count))$count) %>%
+  mutate(condition = ifelse(grepl(ctrl, sample), "no-dox", "+dox")) %>%
   mutate(dox = ifelse(grepl("noDOX", sample), "No Dox","Dox"))
 
-ggplot(exp, aes(x=normcount+1, group=sample, color=condition)) +
-  geom_line(stat="density", alpha = 0.5, lwd=1, adjust=0.75) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of normalized counts")
+pgen <- ggplot(exp, aes(x=count, group=sample, color=condition)) +
+  scale_x_continuous(trans="log1p", breaks=c(1,100,1000,1000,100000)) +
+  theme_bw() +
+  scale_color_manual(values = c("red", "blue")) +
+  labs(color = "Treatment") 
 
-# collapse over samples of the same dox/condition 
-ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
-  geom_line(stat = "density", lwd = 1, alpha = 0.5, adjust=0.75) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of normalized counts")
+praw <- pgen + 
+  xlab("Raw count") +
+  ggtitle("Smoothed density of raw counts") +
+  geom_line(aes(x=count, group=sample, color=condition),
+            stat="density", alpha = 0.4, lwd=1, adjust=0.75) 
+
+pglobal <- pgen +
+  geom_line(aes(x=normcount_global, group=sample, color=condition),
+            stat="density", alpha = 0.4, lwd=1, adjust=0.75) +
+  xlab("Globally normalized count") +
+  ggtitle("Smoothed density of globally normalized counts") 
+
+pcontrol <- pgen +
+  geom_line(aes(x=normcount, group=sample, color=condition),
+            stat="density", alpha = 0.4, lwd=1, adjust=0.75) +
+  xlab("Control-gene normalized count") +
+  ggtitle("Smoothed density of control-gene normalized counts") 
+
+praw
+pglobal
+pcontrol
+
+saveRDS(praw,file="../plots/expdist_raw.rds")
+saveRDS(pglobal,file="../plots/expdist_global.rds")
+saveRDS(pcontrol,file="../plots/expdist_control.rds")
 
 dds <- DESeq(dds)
 res <- results(dds)
@@ -557,6 +581,12 @@ dds <- dds[!is.na(res$padj)]
 res <- res %>% na.omit()
 ```
 
+In contrast, here are the results using global normalization:
+
+```{r}
+dds_global <- DESeq(dds_global)
+sum(results(dds_global)$padj < fdrlevel.de, na.rm = TRUE)
+```
 
 # Reproduce figures for UMRs
 
@@ -874,7 +904,8 @@ ol <- distanceToNearest(regions.sig, annot)
 
 dmrs <- regions.sig[ol@from[mcols(ol)$distance <= 2000],]
 dmrs$gene <- annot$symbol[ol@to[mcols(ol)$distance <= 2000]]
-
+dmrs$prom <- annot[ol@to[mcols(ol)$distance <= 2000],]
+  
 dmrs <- dmrs[!is.na(dmrs$gene),]
 ```
 
@@ -893,6 +924,48 @@ x <- x[!is.na(x)]
 res.dmrs <- res[x,]
 
 dmrs <- cbind(DataFrame(dmrs), res.dmrs)
+```
+
+Now annotate with CG Island status.
+
+```{r}
+annot_islands = build_annotations(genome = 'hg19', 
+                                  annotations = 'hg19_cpg_islands')
+dmrs$CGI <- countOverlaps(dmrs$prom, annot_islands, minoverlap = 100) > 0
+
+```
+
+Prepare a figure that stratifies counts of DMR-DE pairs by CGI status and 
+direction of effect. Do this only for DMRs reaching 0.01 cutoff.
+
+```{r}
+dmrs01 <- data.frame(dmrs) %>% filter(qval < 0.01)
+tab.CGI <- table(dmrs01$CGI[dmrs01$padj < fdrlevel.de], 
+                 dmrs01$log2FoldChange[dmrs01$padj < fdrlevel.de] < 0)
+chisq.test(tab.CGI)
+tab.tot <- table(dmrs01$log2FoldChange[dmrs01$padj < fdrlevel.de] < 0)
+
+tab.CGI <- data.frame(count = c(as.vector(tab.CGI),
+                                as.vector(tab.tot)),
+                      prop = c(as.vector(tab.CGI/t(matrix(rep(colSums(tab.CGI),2), ncol=2))),
+                                as.vector(tab.tot/sum(tab.tot))),
+                      CGI = c("non-CGI", "CGI", "non-CGI", "CGI", "All", "All"),
+                      Genes = c("Activated", "Activated", 
+                                "Repressed", "Repressed",
+                                "Activated", "Repressed"))
+
+tab.CGI$CGI <- factor(tab.CGI$CGI, levels=c("All", "non-CGI", "CGI"))
+tab.CGI$Genes <- factor(tab.CGI$Genes, levels=c("Activated", "Repressed"))
+
+pb <- ggplot(tab.CGI, aes(y = count, x = CGI, fill = Genes)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  xlab("CG density of promoter") +
+  ylab("Count") + 
+  scale_fill_manual(values = c("#E69F00", "#0072B2")) +
+  labs(fill = "Differential\nExpression")+
+  theme_bw()
+pb
+saveRDS(pb, file = "../plots/barplot_CGI.rds")
 ```
 
 ## Figure 5A for dmrseq DMRs
@@ -974,7 +1047,7 @@ dmrsc <- dmrsa %>%
   mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
   na.omit()
 
-ggplot(dmrsc, aes(FCcat, fill = color)) +
+ggplot(dmrsc , aes(FCcat, fill = color)) +
   geom_bar() + 
   facet_wrap( ~ sig) +
   geom_vline(xintercept = 4.5, linetype = "dashed") +
@@ -1041,7 +1114,7 @@ ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
   ggtitle("dmrseq DMRs") +
-  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.005]), 
+  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
              linetype="dashed", color="grey20")
 ```
 
@@ -1070,6 +1143,49 @@ A2
 # save plot for mutlipanel figure
 saveRDS(A2, file="../plots/A2.rds")
 
+
+# Just CGI
+A2 <- ggplot(dmrsa %>% filter(CGI), aes(x = stat, y = log2FoldChange)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75, aes(color = ptcol3)) + 
+  theme_bw() + 
+  xlab("Region test statistic") +
+  ylab("log2 fold change mRNA abundance") +
+  scale_color_manual(values=c("red", "black", "grey")) +
+  geom_smooth() +
+  labs(color="Significance")  +
+  geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
+  geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
+            aes(label="SOX2"), hjust=0.5, vjust=1.25) +
+  ggtitle("dmrseq DMRs") +
+  ylim(-3,3) + 
+  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+             linetype="dashed", color="grey20")
+A2 
+
+# save plot for mutlipanel figure
+saveRDS(A2, file="../plots/A2_cgi.rds")
+
+# Just nonCGI
+A2 <- ggplot(dmrsa %>% filter(!CGI), aes(x = stat, y = log2FoldChange)) +
+  geom_hline(yintercept=0, col="black") +
+  geom_hline(yintercept=0, col="white", linetype="dashed") +
+  geom_point(size=0.5, alpha=0.75, aes(color = ptcol3)) + 
+  theme_bw() + 
+  xlab("Region test statistic") +
+  ylab("log2 fold change mRNA abundance") +
+  scale_color_manual(values=c("red", "black", "grey")) +
+  geom_smooth() +
+  labs(color="Significance")  +
+  ggtitle("dmrseq DMRs") +
+  ylim(-3,3) + 
+  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+             linetype="dashed", color="grey20")
+A2 
+
+# save plot for mutlipanel figure
+saveRDS(A2, file="../plots/A2_noncgi.rds")
 ```
 
 From this figure it is much more clear that most DE genes are down-regulated.
@@ -1178,7 +1294,7 @@ the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds o
 
 Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
-dmrsc <- dmrsa %>% 
+dmrsc <- dmrsa %>%
   filter(qval < 0.01) %>%
   mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
                       "Not Differentially Expressed")) %>%
@@ -1195,20 +1311,10 @@ ggplot(dmrsc, aes(FCcat, fill = color)) +
   ylab("Number of genes") +
   ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
   labs(fill="Direction \nof effect")
+
 ```
 
 ```{r, extraplots2}
-ggplot(dmrsc %>% filter(sig == "Differentially Expressed"), 
-             aes(FCcat, fill = color)) +
-  geom_bar() + 
-  theme_bw() + 
-  scale_fill_manual(values=c("red", "blue", "darkgreen")) + 
-  xlab("mRNA fold change") + 
-  ylab("Number of genes") +
-  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
-  geom_vline(xintercept = 5.5, linetype = "dashed") +
-  labs(fill="Direction \nof effect")
-
 B2 <- ggplot(dmrsc %>% 
                filter(sig == "Differentially Expressed"),
              aes(x=log2FoldChange)) +
@@ -1242,6 +1348,42 @@ B2 <- ggplot(dmrsc %>%
 B2
 # save plot for mutlipanel figure
 saveRDS(B2, file="../plots/B2bw.rds")
+
+# just CGI
+B2 <- ggplot(dmrsc %>% 
+               filter(sig == "Differentially Expressed") %>%
+               filter(CGI),
+             aes(x=log2FoldChange)) +
+  geom_histogram(breaks=seq(-3,3, by=1/5), 
+                 aes(fill=color)) + 
+  scale_fill_manual(values=c("red", "blue")) + 
+  theme_bw() + 
+  xlab("log2 mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("CG Island Promoters") +
+  labs(fill="Direction \nof effect") +
+  xlim(-3,3) 
+B2
+# save plot for mutlipanel figure
+saveRDS(B2, file="../plots/B2_cgi.rds")
+
+# just nonCGI
+B2 <- ggplot(dmrsc %>% 
+               filter(sig == "Differentially Expressed") %>%
+               filter(!CGI),
+             aes(x=log2FoldChange)) +
+  geom_histogram(breaks=seq(-3,3, by=1/5), 
+                 aes(fill=color)) + 
+  scale_fill_manual(values=c("red", "blue")) + 
+  theme_bw() + 
+  xlab("log2 mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Non-CG Island Promoters") +
+  labs(fill="Direction \nof effect") +
+  xlim(-3,3) 
+B2
+# save plot for mutlipanel figure
+saveRDS(B2, file="../plots/B2_noncgi.rds")
 ```
 
 How many DE genes had a decrease compared to an increase overall?
@@ -1253,6 +1395,20 @@ de_up <- sum(dmrsc$sig == "Differentially Expressed" & dmrsc$log2FoldChange > 0,
 Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
 `r signif(de_dn / de_up,3)`.
+
+The confidence intervals for these quantities are: 
+
+```{r}
+n <- de_dn + de_up
+prop <- de_dn / n
+odds <- de_dn / de_up
+
+prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+odds.ci <- prop.ci*n / ((1-prop.ci)*n)
+
+prop.ci
+odds.ci
+```
 
 This shows that DE genes are **overwhelmingly** 
 downregulated when their promoter is demethylated.

@@ -776,6 +776,11 @@ rse <- summarizeOverlaps(dmrs, bfL.H3K4, mode = "Union")
 assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
                                 function(x) x / sizeFactors.H3K4))
 
+annot_islands = build_annotations(genome = 'hg19', 
+                                  annotations = 'hg19_cpg_islands')
+seqlevels(annot_islands) <- gsub("chr", "", seqlevels(annot_islands))
+dmrs$CGI <- countOverlaps(dmrs, annot_islands, minoverlap = 100) > 0
+
 # add counts to dmr dataframe
 dmrs.chip <- data.frame(dmrs) %>%
   mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
@@ -808,7 +813,6 @@ f2a <- ggplot(dmrs.chip %>% filter(meanDiff > 0),
 f2a
 ggsave(file.path(plotdir, "mCG_vs_H3K4me3_scatter_DMR.pdf"))
 saveRDS(f2a, file.path(plotdir, "mCG_vs_H3K4me3_scatter_DMR.rds"))
-
 
 # boxplot version
 n_fun <- function(x){
@@ -852,6 +856,40 @@ f2b
 ggsave(file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR.pdf"))
 saveRDS(f2b, file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR.rds"))
 
+# CGI only
+f2b <- ggplot(dmrs.chip %>% filter(meanDiff > 0) %>% filter(CGI), 
+       aes(y = FC.norm, x = stat)) +
+  geom_point(size=0.5, alpha=0.75, aes(color = qval < 0.01)) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_colour_manual(values = c("grey", "black")) + 
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab("dmrseq statistic") +  
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth() + 
+  theme(legend.position = "none")
+f2b
+saveRDS(f2b, file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR_CGI.rds"))
+
+# CGI only
+f2b <- ggplot(dmrs.chip %>% filter(meanDiff > 0) %>% filter(!CGI), 
+       aes(y = FC.norm, x = stat)) +
+  geom_point(size=0.5, alpha=0.75, aes(color = qval < 0.01)) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_colour_manual(values = c("grey", "black")) + 
+  scale_y_continuous(trans="log2") +
+  theme_bw() +
+  xlab("dmrseq statistic") +  
+  ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth() + 
+  theme(legend.position = "none")
+f2b
+saveRDS(f2b, file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR_nonCGI.rds"))
+
 # boxplot version
 n_fun <- function(x){
   return(data.frame(y = log2(0.08), 
@@ -868,6 +906,28 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   xlab("dmrseq statistic bin (dox - no dox)") +
   ylab("H3K4me3 readcount Fold Change (dox/no dox)")  
 ggsave(file.path(plotdir, "stat_vs_H3K4me3_bins_DMR.pdf"))
+```
+
+Finally, we'll calculate the odds of association with H3K4me3 occupancy
+in the expected direction.
+
+```{r}
+dmrs.chip <- dmrs.chip %>% filter(qval < 0.01)
+up <- sum(dmrs.chip$FC.norm > 1)
+dn <- sum(dmrs.chip$FC.norm < 1)
+
+n <- dn + up
+prop <- dn / n
+odds <- dn / up
+
+prop
+odds
+
+prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+odds.ci <- prop.ci*n / ((1-prop.ci)*n)
+
+prop.ci
+odds.ci
 ```
 
 ## Remake Figure 3C for DNA PolII data
@@ -895,6 +955,8 @@ rse <- summarizeOverlaps(dmrs, bfL.PolII, mode = "Union")
 assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
                                 function(x) x / sizeFactors.PolII))
 
+dmrs$CGI <- countOverlaps(dmrs, annot_islands, minoverlap = 100) > 0
+
 # add counts to dmr dataframe
 dmrs.chip <- data.frame(dmrs) %>%
   mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
@@ -906,7 +968,6 @@ dmrs.chip <- data.frame(dmrs) %>%
          bin = cut(meanDiff, c(0,0.2,0.3,0.4,0.5,0.6,1)),
          binS = cut(stat, c(0,8,9,10,12,15,20,25,46))) %>%
   filter(chip.dox.norm + chip.ctrl.norm > 50)
-
 ```
 
 Next, we construct the scatter plot of methylation change in UMRs versus normalized
@@ -972,6 +1033,39 @@ f2d
 ggsave(file.path(plotdir, "stat_vs_RNApolII_scatter_DMR.pdf"))
 saveRDS(f2d, file.path(plotdir, "stat_vs_RNApolII_scatter_DMR.rds"))
 
+# CGI only
+f2d <- ggplot(dmrs.chip %>% filter(meanDiff > 0) %>% filter(CGI), 
+       aes(y = FC.norm, x = stat)) +
+  geom_point(size=0.5, alpha=0.75, aes(color = qval < 0.01)) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_y_continuous(trans = "log2") +
+  scale_colour_manual(values = c("grey", "black")) + 
+  theme_bw() +
+  xlab("dmrseq statistic") +
+  ylab(expression(paste(Delta, "log2 FC RNA PolII readcount (dox/no dox)"))) +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth() + 
+  theme(legend.position = "none")
+f2d
+saveRDS(f2d, file.path(plotdir, "stat_vs_RNApolII_scatter_DMR_CGI.rds"))
+
+# CGI only
+f2d <- ggplot(dmrs.chip %>% filter(meanDiff > 0) %>% filter(!CGI), 
+       aes(y = FC.norm, x = stat)) +
+  geom_point(size=0.5, alpha=0.75, aes(color = qval < 0.01)) + 
+  geom_hline(yintercept=1, col="black") +
+  geom_hline(yintercept=1, col="white", linetype="dashed") +
+  scale_y_continuous(trans = "log2") +
+  scale_colour_manual(values = c("grey", "black")) + 
+  theme_bw() +
+  xlab("dmrseq statistic") +
+  ylab(expression(paste(Delta, "log2 FC RNA PolII readcount (dox/no dox)"))) +
+  ggtitle("Normalized ChIP-BS read counts") +
+  geom_smooth() + 
+  theme(legend.position = "none")
+f2d
+saveRDS(f2d, file.path(plotdir, "stat_vs_RNApolII_scatter_DMR_nonCGI.rds"))
 
 # boxplot version
 n_fun <- function(x){
@@ -989,6 +1083,28 @@ ggplot(dmrs.chip %>% filter(meanDiff > 0),
   xlab("dmrseq statistic bin (dox - no dox)") +
   ylab("RNA PolII readcount Fold Change (dox/no dox)")  
 ggsave(file.path(plotdir, "stat_vs_RNApolII_bins_DMR.pdf"))
+```
+
+Finally, we'll calculate the odds of association with RNA pol II occupancy
+in the expected direction.
+
+```{r}
+dmrs.chip <- dmrs.chip %>% filter(qval < 0.01)
+up <- sum(dmrs.chip$FC.norm > 1)
+dn <- sum(dmrs.chip$FC.norm < 1)
+
+n <- dn + up
+prop <- dn / n
+odds <- dn / up
+
+prop
+odds
+
+prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+odds.ci <- prop.ci*n / ((1-prop.ci)*n)
+
+prop.ci
+odds.ci
 ```
 
 # Reproduce Figure 5D and E
