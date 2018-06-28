@@ -26,7 +26,7 @@ main manuscript figures
 
 - `R`: Helper scripts with functions for files in `Rmd` 
 
-    - `read.lister`: read methylation count data from GEO into R 
+    - `read.lister.R`: read methylation count data from GEO into R 
     
     - `meanDiff.dss.R`: calculate mean methylation differences for DSS regions
     
