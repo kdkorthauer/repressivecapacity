@@ -11,3 +11,13 @@ authors. Specifically, we observe that forced promoter methylation overwhelmingl
 results in suppression of gene expression, as well as reduced complementary 
 chromatin marks of active transcription.
 
+## File contents
+
+- `Rmd`: Main analysis files (`.Rmd` format) as well as the R script for formating the 
+main manuscript figures are in the `Rmd` directory. 
+
+- `R`: Helper scripts with functions for reading in raw data, calculating mean methylation
+differences over regions, and removing elements from ggplot2 objects are found in the
+`R` directory.
+
+- `img`: Relevant figures from Ford et al. (2017) are included in the `img` directory.
