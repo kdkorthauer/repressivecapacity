@@ -12,3 +12,4 @@ RESULTS/*
 .DS_Store
 plots/*
 slides/*
+Rmd/meth-knit.sh
