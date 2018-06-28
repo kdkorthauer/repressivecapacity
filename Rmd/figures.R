@@ -80,7 +80,7 @@ ggsave("fig3.pdf", width=7.5, height=7)
 
 ### FIGURE 4
 f4 <- readRDS(file="../plots/barplot_CGI.rds")
-f4
+f4 + xlab("CG density of methylated promoter")
 ggsave("fig4.pdf", width=5, height=3)
 
 
@@ -126,13 +126,13 @@ ggsave("figS2.pdf", width=8.6, height=7)
 A <- readRDS(file="stat_vs_H3K4me3_scatter_DMR_CGI.rds") + xlim(0,40) +
   ylab("log2 Fold Change (+dox/no-dox)") +
   ggtitle("H3K4me3 ChIP-BS, CG Islands only")
-B <- readRDS(file="stat_vs_H3K4me3_scatter_DMR_noCGI.rds")  + xlim(0,40) +
+B <- readRDS(file="stat_vs_H3K4me3_scatter_DMR_nonCGI.rds")  + xlim(0,40) +
   ylab("log2 Fold Change (+dox/no-dox)") +
   ggtitle("H3K4me3 ChIP-BS, non CG Islands only")
 C <- readRDS(file="stat_vs_RNApolII_scatter_DMR_CGI.rds") + xlim(0,40) +
   ylab("log2 Fold Change (+dox/no-dox)") +
   ggtitle("RNA PolII ChIP-BS, CG Islands only")
-D <- readRDS(file="stat_vs_RNApolII_scatter_DMR_noCGI.rds")  + xlim(0,40) +
+D <- readRDS(file="stat_vs_RNApolII_scatter_DMR_nonCGI.rds")  + xlim(0,40) +
   ylab("log2 Fold Change (+dox/no-dox)") +
   ggtitle("RNA PolII ChIP-BS, non CG Islands only")
 
