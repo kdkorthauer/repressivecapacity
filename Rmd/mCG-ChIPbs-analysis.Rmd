@@ -1,5 +1,5 @@
 ---
-title: "Reproducing Figure 3 from Ford et al. (2017)"
+title: "Active chromatin mark responses to forced promoter methylation"
 author: "Keegan Korthauer"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
@@ -15,10 +15,13 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 # Summary
 
-Code to try and reproduce figure 3 from the Lister Lab paper by Ford et al., 
+Code to analyse the chromatin mark ChiP-BS counts from the paper by Ford et al., 
 "Frequent lack of repressive capacity of promoter DNA methylation identified 
 through genome-wide epigenomic manipulation" (
 available on [BioRxiv](https://www.biorxiv.org/content/early/2017/09/20/170506)).
+
+Here we want to answer the question: are active chromatin marks decreased after
+forced promoter DNA methylation?
 
 # Workspace Setup
 
@@ -375,7 +378,7 @@ for read depth.
 
 ## H3K4me3
 
-In the manuscript, the normalization of H3K4me3 ChIP-BS data is described
+In Ford et al. (2017), the normalization of H3K4me3 ChIP-BS data is described
 as follows: 
 
 > H3K4me3 ChIP-seq data sets for ZF-D3A +dox and ZF-D3A no-dox cells were normalized by
@@ -391,8 +394,9 @@ that correspond to regions with methylation difference < 0.2 between conditions.
 We'll use the intersection of common peaks (instead of just the center +/- 50 bps
 of the common peaks as done by the authors). We'll annotate them with
 the average methylation level in treatment and control, and select those where both
-treatment and control are less than 0.2. We'll also exclude regions that overlap 
-with a ZF binding site. Then we'll count up the number of reads in each
+treatment and control are less than 0.2 (using only sites with sufficient coverage 
+for the avg methylation calculation). We'll also exclude regions within 5kb of
+a ZF binding site. Then we'll count up the number of reads in each
 of the remaining peaks. For downstream analyses, read counts are scaled by the size
 factor from this total. 
 
@@ -546,16 +550,18 @@ sizeFactors.PolII <- totalReads/median(totalReads)
 sizeFactors.PolII
 ```
 
-# Reproduce Figure 3C
+# Associate methylation with ChIP-BS counts
 
-With the tables in hand, we attempt to reproduce Figure 3 from the manuscript.
+With the tables in hand, we will make a scatterplot similar to
+Figure 3 from the Ford et al. (2017).
 Below is a screenshot of what this figure looks like. 
 
 ![Figure 3C from Ford et al. (2017)](../img/fig3Cscreenshot.png)
 
 Note that the x-axis in Figure 3C is mislabeled. The change in $\Delta$mCG is computed
 as +Dox - control (since the dox induces methylation, and most values are positive).
-Figure 3 is used make some pretty bold claims. For example, the manuscript states that
+Figure 3 is used make some of the main claims of the paper. 
+For example, the manuscript states that
 
 > These data demonstrate that forced DNA methylation is not sufficient to disrupt H3K4me3 occupancy or the interaction of initiated RNA polymerase II with genomic DNA.
 
@@ -567,190 +573,11 @@ In more detail, this statement is backed up by the following detail regarding Fi
 
 > Importantly, phospho-Ser5 RNA pol II was clearly able to directly interact with ZF-D3A methylated DNA (Fig. 3E)
 
-## Reproduce Figure 3C for H3K4me3
+In the following series of plots we'll evaluate the evidence for these conclusions.
 
-We first start with Figure 3C, the scatterplot of methylation difference and
-difference in H3K4me3. 
+## Scatterplot of methylation and H3K4me3 counts
 
-First, we need to find overlaps between the UMRs and H3K4me3 reads. We also follow
-Ford et al. and expand the UMR regions to a 5kb window centered at the UMRs.
-
-They also excluded regions with less than 2000 total reads mapping. That absolute 
-cutoff removes a high proportion of the data (more than 85%); perhaps due to differences
-in mapping procedure, or how the normalization scaling was carried out. We'll use
-a cutoff of 50 total (normalized) reads
-
-```{r, intersectchip}
-umrs <- makeGRangesFromDataFrame(ts3)
-md <- meanDiff.dss(bs, dmrs=umrs, testCovariate="condition")
-# uniform sizes of umrs
-umrs <- resize(umrs, width = 5000, fix = "center")
-seqlevels(umrs) <- gsub("chr", "", seqlevels(umrs))
-rse <- summarizeOverlaps(umrs, bfL.H3K4, mode = "Union")
-assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
-                                function(x) x / sizeFactors.H3K4))
-
-# add counts to UMR dataframe
-ts3.h <- ts3 %>% 
-  mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
-         chip.ctrl.norm = assays(rse)$normcounts[,grepl("Ctrl", colnames(rse))],
-         chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
-         chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
-         delta_mC_orig = methylation_level_in_ZF_D3A_plus_dox - methylation_level_in_MCF7_control,
-         delta_mC = md,
-         FC = chip.dox / chip.ctrl,
-         FC.norm = chip.dox.norm / chip.ctrl.norm,
-         bin = cut(delta_mC, c(0,0.1,0.2,0.3,0.4,0.5,0.6,1))) %>%
-  filter(chip.dox.norm + chip.ctrl.norm > 50) %>%
-  filter(!is.na(delta_mC))
-```
-
-Next, we construct the scatter plot of methylation change in UMRs versus normalized
-difference in H3K4me3 ChIP-Seq normalized read counts. 
-
-```{r, fig3c}
-# raw read counts
-ggplot(ts3.h %>% filter(delta_mC > 0), aes(y = FC, x = delta_mC)) +
-  geom_point(size=0.5, alpha=0.75) + 
-  geom_hline(yintercept=1, col="black") +
-  geom_hline(yintercept=1, col="white", linetype="dashed") +
-  scale_y_continuous(trans="log2") +
-  theme_bw() +
-  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +  
-  ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
-  ggtitle("Raw ChIP-BS read counts") +
-  geom_smooth()
-
-# normalized
-ggplot(ts3.h %>% filter(delta_mC > 0), aes(y = FC.norm, x = delta_mC)) +
-  geom_point(size=0.5, alpha=0.75) + 
-  geom_hline(yintercept=1, col="black") +
-  geom_hline(yintercept=1, col="white", linetype="dashed") +
-  scale_y_continuous(trans="log2") +
-  theme_bw() +
-  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
-  ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
-  ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth()
-ggsave(file.path(plotdir, "mCG_vs_H3K4me3_scatter_UMR.pdf"))
-
-# boxplot version
-n_fun <- function(x){
-  return(data.frame(y = log2(0.12), 
-                    label = paste0("(n = ", scales::comma(length(x)), ")")))
-}
-
-ggplot(ts3.h %>% filter(delta_mC > 0), 
-       aes(y = FC.norm, x = bin)) +
-  geom_hline(yintercept=1, col="black") +
-  geom_hline(yintercept=1, col="white", linetype="dashed") +
-  geom_boxplot() +
-  stat_summary(fun.data = n_fun, geom = "text") +
-  scale_y_continuous(trans="log2") +
-  theme_bw() +
-  xlab(expression(paste(Delta, "mCG bin in UMR (dox - no dox)"))) +
-  ylab("H3K4me3 readcount Fold Change (dox/no dox)")  +
-  geom_point(data = ts3.h %>% filter(bin == "(0.6,1]"), position="jitter",
-             color = "grey")
-ggsave(file.path(plotdir, "mCG_vs_H3K4me3_bins_UMR.pdf"))
-```
-
-The figure is similar in spirit to the one in the paper, but the one in the paper
-has much more variability in the spread of the points (here we are plotting the 
-log2 ratio on the y-axis instead of the absolute difference). The downward trend 
-in H3K4me3 decrease for higher values of methylation increase is much more apparent
-in this this plot.
-
-## Create Figure 3C for RNA PolII 
-
-This figure was not included in the paper, but we'll look at it here.
-
-First, we need to find overlaps between the UMRs and H3K4me3 reads. In the paper,
-they used a 5kb window centered at the UMRs, but that seems to dilute the signal
-so we won't do that. 
-
-Since the average read counts in these regions are much lower than for the 
-H3KM4 data, we will use a lower threshold for the total number of reads across
-dox and control (50 instead of 500).
-
-```{r, intersectchip-polII}
-umrs <- makeGRangesFromDataFrame(ts3)
-# uniform sizes of umrs
-umrs <- resize(umrs, width = 5000, fix = "center")
-seqlevels(umrs) <- gsub("chr", "", seqlevels(umrs))
-rse <- summarizeOverlaps(umrs, bfL.PolII, mode = "Union")
-assays(rse)$normcounts <- t(apply(assays(rse)$counts, 1,
-                                function(x) x / sizeFactors.PolII))
-
-# add counts to UMR dataframe
-ts3.p <- ts3 %>% 
-  mutate(chip.dox.norm = assays(rse)$normcounts[,grepl("Meth", colnames(rse))],
-         chip.ctrl.norm = assays(rse)$normcounts[,grepl("Ctrl", colnames(rse))],
-         chip.dox = assays(rse)$counts[,grepl("Meth", colnames(rse))],
-         chip.ctrl = assays(rse)$counts[,grepl("Ctrl", colnames(rse))],
-         delta_mC = methylation_level_in_ZF_D3A_plus_dox - methylation_level_in_MCF7_control,
-         FC.norm = chip.dox.norm / chip.ctrl.norm,
-         FC = chip.dox / chip.ctrl,
-         bin = cut(delta_mC, c(0,0.1,0.2,0.3,0.4,0.5,0.6,1))) %>%
-  filter(chip.dox.norm + chip.ctrl.norm > 50) %>%
-  filter(!is.na(delta_mC))
-```
-
-Next, we construct the scatter plot of methylation change in UMRs versus normalized
-difference in H3K4me3 ChIP-Seq normalized read counts. 
-
-```{r, fig3c-pollII}
-# raw read counts
-ggplot(ts3.p %>% filter(delta_mC > 0), 
-       aes(y = FC, x = delta_mC)) +
-  geom_point(size=0.5, alpha=0.75) + 
-  scale_y_continuous(trans="log2") +
-  geom_hline(yintercept=1, col="black") +
-  geom_hline(yintercept=1, col="white", linetype="dashed") +
-  theme_bw() +
-  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
-  ylab("RNA PolII readcount Fold Change (dox/no dox)") +
-  ggtitle("Raw ChIP-BS read counts") +
-  geom_smooth()
-
-# normalized
-ggplot(ts3.p %>% filter(delta_mC > 0), 
-       aes(y = FC.norm, x = delta_mC)) +
-  geom_point(size=0.5, alpha=0.75) + 
-  scale_y_continuous(trans="log2") +
-  geom_hline(yintercept=1, col="black") +
-  geom_hline(yintercept=1, col="white", linetype="dashed") +
-  theme_bw() +
-  xlab(expression(paste(Delta, "mCG in UMR (dox - no dox)"))) +
-  ylab("RNA PolII readcount Fold Change (dox/no dox)") +
-  ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth() 
-ggsave(file.path(plotdir, "mCG_vs_RNApolII_scatter_UMR.pdf"))
-
-
-#boxplot version
-ggplot(ts3.p %>% filter(delta_mC > 0), 
-       aes(y = FC.norm, x = bin)) +
-  geom_hline(yintercept=1, col="black") +
-  geom_hline(yintercept=1, col="white", linetype="dashed") +
-  geom_boxplot() +
-  stat_summary(fun.data = n_fun, geom = "text") +
-  scale_y_continuous(trans="log2") +
-  theme_bw() +
-  xlab(expression(paste(Delta, "mCG bin in UMR (dox - no dox)"))) +
-  ylab("RNA PolII readcount Fold Change (dox/no dox)") +
-  geom_point(data = ts3.p %>% filter(bin == "(0.6,1]"), position="jitter",
-             color = "grey")
-ggsave(file.path(plotdir, "mCG_vs_RNApolII_bins_UMR.pdf"))
-```
-
-# Figure 3C for DMRs instead of UMRs
-
-We also wish to redo Fig 3 with DMRs from dmrseq, instead of UMRs as done in the paper.
-
-## Reproduce Figure 3C for H3K4me3 data
-
-We first start with Figure 3C, the scatterplot of methylation difference and
+We first start with a scatterplot of methylation difference and
 difference in H3K4me3. 
 
 First, we need to find overlaps between the dmrseq DMRs and H3K4me3 reads.
@@ -930,7 +757,7 @@ prop.ci
 odds.ci
 ```
 
-## Remake Figure 3C for DNA PolII data
+## Scatterplot of methylation and RNA PolII counts
 
 First, we need to find overlaps between the dmrseq DMRs and DNA PolII reads.
 The DMRs were prepared in the `methylationCountAnalysis.Rmd` analysis.
@@ -970,7 +797,7 @@ dmrs.chip <- data.frame(dmrs) %>%
   filter(chip.dox.norm + chip.ctrl.norm > 50)
 ```
 
-Next, we construct the scatter plot of methylation change in UMRs versus normalized
+Next, we construct the scatter plot of methylation change in DMRs versus normalized
 difference in RNA PolII ChIP-Seq normalized read counts. 
 
 ```{r, fig3c-dmrs-pol2}
@@ -1107,9 +934,9 @@ prop.ci
 odds.ci
 ```
 
-# Reproduce Figure 5D and E
+# Methylation of ChIP-bound DNA
 
-Next we try Figure 5D-E, the boxplots of methylation level in UMRs in DNA versus 
+Next will perform an analysis similar to Figure 5D-E, the boxplots of methylation level in UMRs in DNA versus 
 in H3K4me3 / DNA Polymerase II ChIP-ed DNA.
 
 ![Figure 3D-E from Ford et al. (2017)](../img/fig3DEscreenshot.png)
@@ -1120,7 +947,7 @@ In more detail, Figure 3D and E are used to support the following claims:
 
 > Importantly, phospho-Ser5 RNA pol II was clearly able to directly interact with ZF-D3A methylated DNA (Fig. 3E)
 
-To construct these figures, we need to intersect the ChIP-BS data with the UMRs. 
+To construct these figures, we need to intersect the ChIP-BS data with the DMRs. 
 we'll use both the whole genome bisulfite sequencing data and the ChIP-BS
 data. See the 
 `methylationCountAnalysis.Rmd` for details on how the WGBS data is downloaded and 
@@ -1131,7 +958,7 @@ intersections) that also intersect with a UMR with >0.2 methylation
 change. Since the vast majority of methylation differences from control to dox
 are in the positive direction, it is not surprising that the boxplots show a 
 methylation difference in the positive direction. What we'd really like to contrast 
-is the methylation level in UMRs that overlap a peak with UMRs that do not overlap 
+is the methylation level in DMRs that overlap a peak with DMRs that do not overlap 
 a peak. We expect that if H3K4Me3 sites are usually demethylated, and if forced 
 methylation really does influence H3K4Me3 levels, the methylation level in 
 UMRs that don't overlap H3K4Me3 peaks will be higher on average than those which
@@ -1161,9 +988,9 @@ show(bs.h3k4)
 show(bs.pol)
 ```
 
-## Figure 3D (H3K4me3)
+## H3K4me3
 
-First we'll make the plot comparing average methylation values in UMRs by whether
+First we'll make the plot comparing average methylation values in DMRs by whether
 they overlap a H3K4me3 peak, for both the WGBS and ChIP-purified experiments. 
 We'll create a function so we can reuse the code to make similar plots for RNA polII
 as well as DMRs.
@@ -1363,44 +1190,7 @@ methboxplots <- function(condition = c("H3K4", "PolII"),
 }
 ```
 
-Now we'll use the function to create the plots for H3K4me3 & UMRS.
-
-```{r}
-methboxplots(condition = "H3K4", baseregions = "Peak", compareregionsLabel = "UMRs",
-             compareregions = ts3, bamfilelist = bfL.H3K4, filterPeaksByCoverage = TRUE,
-             readfilter = 100)
-ggsave(file.path(plotdir, "mCG_H3K4me3_boxplot_byUMR.pdf"), width = 7, height = 3.5)
-
-methboxplots(condition = "H3K4", baseregions = "UMR", compareregionsLabel = "UMRs",
-             compareregions = ts3, bamfilelist = bfL.H3K4, filterPeaksByCoverage = TRUE,
-             readfilter = 100)
-ggsave(file.path(plotdir, "mCG_UMR_boxplot_byH3K4me3.pdf"), width = 7, height = 3.5)
-```
-
-
-## Figure 3E (RNA Pol II)
-
-We'll do the same as in the previous section, but for RNA Pol II data.
-
-```{r, fig3e-pol, fig.height=4, fig.width=7}
-methboxplots(condition = "PolII", baseregions = "Peak", compareregionsLabel = "UMRs",
-             compareregions = ts3, bamfilelist = bfL.PolII, filterPeaksByCoverage = TRUE,
-             readfilter = 25)
-ggsave(file.path(plotdir, "mCG_RNApolII_boxplot_byUMR.pdf"), width = 7, height = 3.5)
-
-methboxplots(condition = "PolII", baseregions = "UMR", compareregionsLabel = "UMRs",
-             compareregions = ts3, bamfilelist = bfL.PolII, filterPeaksByCoverage = TRUE,
-             readfilter = 25)
-ggsave(file.path(plotdir, "mCG_UMR_boxplot_byRNApolII.pdf"), width = 7, height = 3.5)
-```
-
-
-# Figure 3D and E with DMRs instead of UMRS
-
-We repeat the past couple of sections using dmrseq DMRs instead of UMRs.
-
-## Figure 3D (H3K4me3)
-
+Now we'll use the function.
 First we'll make the plot comparing average methylation values in H3K4me3 peaks
 that overlap a DMR. 
 
@@ -1422,7 +1212,7 @@ ggsave(file.path(plotdir, "mCG_DMR_boxplot_byH3K4me3.pdf"), width = 7, height = 
 ```
 
 
-## Figure 3E (RNA Pol II)
+## RNA Pol II
 
 We'll do the same as in the previous section, but for RNA Pol II data.
 

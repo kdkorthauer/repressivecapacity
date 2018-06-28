@@ -25,10 +25,6 @@ B2 <- readRDS(file="B2.rds") +
              ggtitle("Gene (FDR < 0.05) - DMR pairs (FDR < 0.01)") +
              xlab("log2 mRNA Fold Change (+dox/no-dox)") 
 
-B1bw <- readRDS(file="B1bw.rds") +   ylab("Density") +
-  ggtitle(expression(paste("Gene - UMR pairs (", Delta, "mCG > 0.3)")))
-B2bw <- readRDS(file="B2bw.rds") +   ylab("Density") +
-  ggtitle("Gene (FDR < 0.05)  - DMR pairs (FDR < 0.01)") 
 
 leg_A <- get_legend(A1)
 leg_B <- get_legend(B1)

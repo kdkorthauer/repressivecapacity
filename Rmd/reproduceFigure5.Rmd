@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 # Summary
 
-Code to try and reproduce figure 5 from the Lister Lab paper by Ford et al., 
+Code to reproduce figure 5 from the paper by Ford et al., 
 "Frequent lack of repressive capacity of promoter DNA methylation identified 
 through genome-wide epigenomic manipulation" (
 available on [BioRxiv](https://www.biorxiv.org/content/early/2017/09/20/170506)).
@@ -37,7 +37,6 @@ library(annotatr)
 # data directory
 datdir <- "../DATA"
 dir.create(datdir, showWarnings = FALSE)
-
 ```
 
 # Data download
@@ -179,16 +178,16 @@ ggplot(ts, aes(x = number_of_CpG_cytosines_in_region + 1, group = type, color = 
 ```
 
 The odd shape of the last plot is due to a large fraction of UMRs being annotated
-as having 0 CpGs...
+as having 0 CpGs.
 
 # Reproduce Figure 5
 
-With the tables in hand, we attempt to reproduce Figure 5 from the manuscript.
+With the tables in hand, we will reproduce Figure 5 from the manuscript.
 Below is a screenshot of what this figure looks like.
 
 ![Figure 5A-B from Ford et al. (2017)](../img/fig5screenshot.png)
 
-This Figure is used make some pretty bold claims. For example, the manuscript states that
+This figure is used as evidence for some of the main results. For example, the manuscript states that
 
 > Thus, induced DNA methylation of promoters is frequently insufficient as a primary instructive biochemical signal for gene silencing in these cells.
 
@@ -228,6 +227,8 @@ ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
 
 ```
 
+Save a copy of the next plot to go into a main figure.
+
 ```{r, extraplot2}
 A1 <- ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
   geom_hline(yintercept=0, col="black") +
@@ -256,7 +257,7 @@ The figure looks pretty similar to the one in the paper.
 
 ## Reproduce Figure 5(B)
 
-Next we try Figure 5B, the barplot of number of UMRs in each fold change category.
+Next we create Figure 5B, the barplot of number of UMRs in each fold change category.
 
 ```{r, fig5b, fig.height=4, fig.width=7}
 ts4b <- ts4 %>% 
@@ -295,7 +296,7 @@ the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds o
 # Alternate versions of Figure 5
 
 Next we'll try and create alternate versions of these Figures to understand the
-lack of a trend displayed and evaluate whether the (rather strong) conclusion
+lack of a trend displayed and evaluate whether the conclusion
 about the lack of influence of methylation on expression holds.
 
 ## Alternate versions of Figure 5A
@@ -375,7 +376,7 @@ Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE gen
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
 `r signif(de_dn / de_up,3)`.
 
-There is clearly a difference in the pattern for DE versus non-DE genes.  
+There is clearly a difference in the pattern for DE versus non-DE genes. 
 But the boundaries are not sensible - the increased categories are combined collapsed into
 one, and the borderline category is the same color as increase.
 
@@ -426,6 +427,8 @@ ggplot(ts4c, aes(FCcat, fill = color)) +
   labs(fill="Direction \nof effect")
 ```
 
+Save a version of this plot to include in a main figure.
+
 ```{r, extraplots1}
 B1 <- ggplot(ts4c , 
              aes(log2FC_RNAseq, fill = color)) +
@@ -442,22 +445,6 @@ B1
 
 # save plot for mutlipanel figure
 saveRDS(B1, file="../plots/B1.rds")
-
-B1 <- ggplot(ts4c , 
-             aes(log2FC_RNAseq)) +
-  geom_histogram(breaks=seq(-3,3, by=1/5), aes(y=..density..))+ 
-  theme_bw() + 
-  geom_vline(xintercept = 0, color="black") +
-  geom_vline(xintercept = 0, color="white", linetype = "dashed") +
-  xlab("log2 mRNA fold change") + 
-  ylab("Density") +
-  ggtitle("Gene - UMR Pairs ") +
-  xlim(-3,3) +
-  ylim(0,1.15)
-B1 
-
-# save plot for mutlipanel figure
-saveRDS(B1, file="../plots/B1bw.rds")
 ```
 
 How many DE genes had a Decrease compared to an increase overall?
@@ -491,7 +478,10 @@ of 1e-5).
 
 ## DE analysis
 
-First we need to run the differential expression analysis. 
+First we need to run the differential expression analysis. We'll run a standard
+DE analysis using default normalization in DESeq2, as described in Ford et al. (2017).
+Since we want to compare the control cells to the dox-treated cells, we'll use 
+the 4 no dox control versus the 4 dox methylated group for the DE comparison. 
 
 ```{r, expressionEDA, fig.width=8, fig.height=4}
 exp <- fread(file.path(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt"))
@@ -519,59 +509,19 @@ coldata <- data.frame(sample=colnames(exp)) %>%
 dds <- DESeqDataSetFromMatrix(countData = exp,
                               colData = coldata,
                               design = ~ condition)
-dds <- dds[, dds$condition != "Other"]
-dds$condition <- droplevels(dds$condition)
-dds <- estimateSizeFactors(dds)
 
-# plot distribution of expression values
-exp <- data.frame(counts(dds)) %>% 
-  gather(sample, count) %>% 
-  mutate(normcount = (data.frame(counts(dds, normalize=TRUE)) %>% 
-           gather(sample, count))$count) %>%
-  mutate(condition = ifelse(grepl(ctrl, sample), "Control", "Methylated")) %>%
-  mutate(dox = ifelse(grepl("noDOX", sample), "No Dox", 
-                      ifelse(grepl("DOXremoval", sample), "Dox withdrawal", 
-                             "Dox")))
-  
-ggplot(exp, aes(x=count+1, group=sample, color=condition)) +
-  geom_density(adjust=0.75) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of raw counts")
-
-ggplot(exp, aes(x=count+1, group=interaction(dox, condition), color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of raw counts")
-
-ggplot(exp, aes(x=normcount+1, group=interaction(dox, condition), color=condition)) +
-  geom_density(adjust=0.75, aes(linetype=dox)) +
-  scale_x_continuous(trans="log2") +
-  theme_bw() + 
-  ggtitle("Smoothed density of normalized counts")
-
-```
-
-There could be an effect of dox on the control cell line - the dox control group
-looks very similar to the methylated group, and the dox withdrawal group has higher 
-expression (but withdrawal and no dox groups are in opposite order).
-
-Going forward, we'll use only the no dox control versus the dox methylated group
-for the DE comparison. In addition, since we observe global shifts in the expected
-direction (i.e. lower expression for the methylated condition), we will not perform
-standard normalization.
-
-```{r, deseq}
 dds <- dds[, dds$condition == "Methylated" | 
              (dds$condition == "Control" & grepl("noDOX", dds$sample)) ]
-sizeFactors(dds) <- 1
+dds$condition <- droplevels(dds$condition)
+table(dds$condition)
+dds <- estimateSizeFactors(dds)
 dds <- DESeq(dds)
 res <- results(dds)
 
-sum(res$padj < 0.01, na.rm = TRUE)
+sum(res$padj < 0.05, na.rm = TRUE)
 res <- res %>% na.omit()
 ```
+
 ## Associate DMRs with genes
 
 Next we need to associate each DMR with a gene by checking overlap with promoters.
@@ -634,13 +584,12 @@ ggplot(dmrs, aes(x = delta_mC, y = log2FoldChange)) +
   labs(color="Differentially\n Expressed")
 ```
 
-From this figure it is a little more clear that most DE genes are down-regulated.
-But there doesn't seem to be much of a trend for larger magnitude expression 
-differences with larger magnitude methylation differences.
+From this figure it is not very evident that most DE genes are down-regulated.
 
 ## Figure 5B for DMRs
 
 First in the style of the paper:
+
 ```{r, dmrs-5b-orig, fig.height=4, fig.width=7}
 dmrsb <- dmrs %>% 
   filter(delta_mC > 0.3) %>%
