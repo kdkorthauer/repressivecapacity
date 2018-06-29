@@ -493,7 +493,7 @@ ggplot(exp %>% filter(dox != "Dox withdrawal"),
 ```
 
 Looks like the ZF-bound genes in the Dox group had slightly shifted global expression.
-For this reason, we only compute sizefactors on the `r length(normgenes)` normgenes.
+For this reason, we only compute sizefactors on the `r length(norm_genes)` control genes.
 We also filter out very lowly expressed genes (total counts in all samples together
 fewer than 10 or counts of zero in more than half of the samples). 
 We'll use the 8 no dox control versus the 4 dox methylated group for the DE comparison. 
