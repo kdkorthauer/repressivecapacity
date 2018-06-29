@@ -286,21 +286,6 @@ plotEmpiricalDistribution(bs[idx,],
 
 # DMR analysis
 
-```{r, eval=FALSE, results='hide', echo=FALSE, include=FALSE}
-# test out if parallel is functioning properly
-library(BiocParallel)
-tf <- function(){
-  message("a.", appendLF=FALSE)
-  Sys.sleep(1)
-}
-
-#without parallel
-system.time({a <- lapply(1:16, function(x) tf())})
-
-register(MulticoreParam(8))  
-system.time({a <- bplapply(1:16, function(x) tf())})
-```
-
 We will use dmrseq to identify Differentially Methylated Regions (DMRs). 
 
 First we will filter the loci by coverage (remove those with zero coverage
@@ -373,6 +358,7 @@ It looks like `r length(unique(ol@from))`
 of the DSS DMRs overlap with the dmrseq DMRs (at `r fdrlevel.dmr` FDR). 
 Conversely, `r length(unique(ol@to))` 
 (`r signif(100*(length(unique(ol@to)) / sum(regions$qval < fdrlevel.dmr)), 3)`%)
+of the dmrseq DMRs overlap with the DSS DMRs.
 
 A couple of plots to compare the characteristics of regions found by DSS and 
 dmrseq.
@@ -493,6 +479,8 @@ zf_genes <- (ts1 %>%
 norm_genes <- unique((exp %>%
   filter(!(gene %in% unique(c(dmr_genes, zf_genes)))))$gene)
 
+str(norm_genes)
+
 exp <- exp %>% 
   mutate(normg = ifelse(gene %in% norm_genes, "Background Gene", "ZF-bound Gene"))
 
@@ -505,10 +493,10 @@ ggplot(exp %>% filter(dox != "Dox withdrawal"),
 ```
 
 Looks like the ZF-bound genes in the Dox group had slightly shifted global expression.
-For this reason, we only compute sizefactors on the normgenes.
+For this reason, we only compute sizefactors on the `r length(normgenes)` normgenes.
 We also filter out very lowly expressed genes (total counts in all samples together
 fewer than 10 or counts of zero in more than half of the samples). 
-We'll use the 4 no dox control versus the 4 dox methylated group for the DE comparison. 
+We'll use the 8 no dox control versus the 4 dox methylated group for the DE comparison. 
 
 ```{r, deseq}
 dds <- dds[, dds$condition == "Methylated" | 

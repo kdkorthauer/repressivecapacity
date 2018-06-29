@@ -481,7 +481,7 @@ of 1e-5).
 First we need to run the differential expression analysis. We'll run a standard
 DE analysis using default normalization in DESeq2, as described in Ford et al. (2017).
 Since we want to compare the control cells to the dox-treated cells, we'll use 
-the 4 no dox control versus the 4 dox methylated group for the DE comparison. 
+the 8 no dox control versus the 4 dox methylated group for the DE comparison. 
 
 ```{r, expressionEDA, fig.width=8, fig.height=4}
 exp <- fread(file.path(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt"))
@@ -498,8 +498,8 @@ allZero <- rowSums(exp==0)==ncol(exp)
 exp <- exp[!allZero,]
 
 # strings to match the two comparison samples - control and ZF + DOX
-ctrl <- "MCF7_emptyVector"
-trt <- "MCF7_ZF_DNMT3A_DOX_rep"
+ctrl <- "MCF7_emptyVector|MCF7_ZF_DNMT3A_noDOX_rep"
+trt <- "MCF7_ZF_DNMT3A_DOX"
 
 # set up colData
 coldata <- data.frame(sample=colnames(exp)) %>%
@@ -512,6 +512,7 @@ dds <- DESeqDataSetFromMatrix(countData = exp,
 
 dds <- dds[, dds$condition == "Methylated" | 
              (dds$condition == "Control" & grepl("noDOX", dds$sample)) ]
+dds <- dds[, !( dds$condition == "Methylated" & grepl("removal", dds$sample))]
 dds$condition <- droplevels(dds$condition)
 table(dds$condition)
 dds <- estimateSizeFactors(dds)

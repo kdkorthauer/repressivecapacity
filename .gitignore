@@ -13,4 +13,4 @@ RESULTS/*
 plots/*
 slides/*
 Rmd/meth-knit.sh
-Rmd/*.out
+Rmd/*.Rout

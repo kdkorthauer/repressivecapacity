@@ -96,9 +96,9 @@ leg_A <- get_legend(A + theme(legend.position="bottom"))
 pS1 <- plot_grid(A + theme(legend.position="none"), 
                  B + theme(legend.position="none"),
                  C + theme(legend.position="none"),
-                ncol = 3, labels = LETTERS[1:3])
-plot_grid(pS1, leg_A, ncol = 1, rel_heights = c(1, 0.1))
-ggsave("figS1.pdf", width=9, height=2.75)
+                ncol = 1, labels = LETTERS[1:3])
+plot_grid(pS1, leg_A, ncol = 1, rel_heights = c(1, 0.05))
+ggsave("figS1.pdf", width=4.5, height=9)
 
 ### FIGURE S2 - scatterplot meth expr faceted by CGI status
 A <- readRDS(file="A2_cgi.rds") + ylab("log2 Fold Change (+dox/no-dox)") 
