@@ -508,6 +508,10 @@ dds <- estimateSizeFactors(dds,
 dds_global <- estimateSizeFactors(dds)
 table(dds$condition)
 
+on_genes <- rowMeans(counts(dds, normalize = TRUE)[,dds$condition == "Control"]) >= 20
+dds <- dds[on_genes,]
+dds_global <- dds_global[on_genes,]
+
 # check resulting distributions after normalization
 exp <- data.frame(counts(dds)) %>% 
   mutate(gene = rownames(dds)) %>%
@@ -649,6 +653,38 @@ pb <- ggplot(tab.CGI, aes(y = count, x = CGI, fill = Genes)) +
 pb
 saveRDS(pb, file = "../plots/barplot_CGI.rds")
 ```
+
+Do the same as above for all genes
+
+```{r}
+dmrs01 <- data.frame(dmrs) %>% filter(qval < 0.01)
+tab.CGI <- table(dmrs01$CGI, dmrs01$log2FoldChange < 0)
+chisq.test(tab.CGI)
+tab.tot <- table(dmrs01$log2FoldChange < 0)
+
+tab.CGI <- data.frame(count = c(as.vector(tab.CGI),
+                                as.vector(tab.tot)),
+                      prop = c(as.vector(tab.CGI/t(matrix(rep(colSums(tab.CGI),2), ncol=2))),
+                                as.vector(tab.tot/sum(tab.tot))),
+                      CGI = c("non-CGI", "CGI", "non-CGI", "CGI", "All", "All"),
+                      Genes = c("Activated", "Activated", 
+                                "Repressed", "Repressed",
+                                "Activated", "Repressed"))
+
+tab.CGI$CGI <- factor(tab.CGI$CGI, levels=c("All", "non-CGI", "CGI"))
+tab.CGI$Genes <- factor(tab.CGI$Genes, levels=c("Activated", "Repressed"))
+
+pb <- ggplot(tab.CGI, aes(y = count, x = CGI, fill = Genes)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  xlab("CG density of promoter") +
+  ylab("Count") + 
+  scale_fill_manual(values = c("#E69F00", "#0072B2")) +
+  labs(fill = "Expression")+
+  theme_bw()
+pb
+saveRDS(pb, file = "../plots/barplot_CGI_allgenes.rds")
+```
+
 
 ## Scatterplot of methylation versus expression
 
@@ -899,6 +935,20 @@ Looks like there are `r de_dn` decreased genes and `r de_up` increased genes, wh
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
 `r signif(de_dn / de_up,3)`.
 
+The confidence intervals for these quantities are: 
+
+```{r}
+n <- de_dn + de_up
+prop <- de_dn / n
+odds <- de_dn / de_up
+
+prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+odds.ci <- prop.ci*n / ((1-prop.ci)*n)
+
+prop.ci
+odds.ci
+```
+
 Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>%
@@ -940,6 +990,23 @@ B2 <- ggplot(dmrsc %>%
 B2
 # save plot for mutlipanel figure
 saveRDS(B2, file="../plots/B2.rds")
+
+# including non - DE
+B2 <- ggplot(dmrsc,
+             aes(x=log2FoldChange)) +
+  geom_histogram(breaks=seq(-3,3, by=1/5), 
+                 aes(fill=color)) + 
+  scale_fill_manual(values=c("red", "blue")) + 
+  theme_bw() + 
+  xlab("log2 mRNA fold change") + 
+  ylab("Number of genes") +
+  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
+  labs(fill="Direction \nof effect") +
+  xlim(-3,3) 
+B2
+# save plot for mutlipanel figure
+saveRDS(B2, file="../plots/B2_allgenes.rds")
+
 
 # just CGI
 B2 <- ggplot(dmrsc %>% 
