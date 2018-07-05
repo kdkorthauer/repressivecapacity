@@ -949,6 +949,32 @@ prop.ci
 odds.ci
 ```
 
+
+How many genes were significantly DE?
+
+```{r}
+de <- sum(dmrsb$sig, na.rm=TRUE)
+ee <- sum(!dmrsb$sig, na.rm=TRUE)
+```
+Looks like there are `r de` significantly DE genes and `r ee` non-DE genes (at FDR 0.05), where
+the proportion decreased is `r signif(de / (de + ee),3)` and the odds of decrease is
+`r signif(de / ee,3)`.
+
+The confidence intervals for these quantities are: 
+
+```{r}
+n <- de + ee
+prop <- de / n
+odds <- de /
+
+prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+odds.ci <- prop.ci*n / ((1-prop.ci)*n)
+
+prop.ci
+odds.ci
+```
+
+
 Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>%
