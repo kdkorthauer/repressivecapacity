@@ -209,6 +209,7 @@ ts4 <- ts4 %>%
                log2(FC*BaseMean_RNAseq))) %>%
   mutate(big = ifelse(delta_mC > 0.3, "high", "low")) %>%
   mutate(ABin = ntile(A, 9)) 
+table(ts4$sig, ts4$delta_mC > 0.3)
 
 ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
   geom_hline(yintercept=0, col="black") +
@@ -371,6 +372,16 @@ How many DE genes had a decrease compared to an increase overall?
 ```{r}
 de_dn <- sum(ts4b$sig & ts4b$`FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)` < 1)
 de_up <- sum(ts4b$sig & ts4b$`FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)` > 1)
+```
+Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+How many non-DE genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(!ts4b$sig & ts4b$`FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)` < 1)
+de_up <- sum(!ts4b$sig & ts4b$`FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)` > 1)
 ```
 Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
@@ -573,6 +584,8 @@ dmrs <- data.frame(dmrs@listData) %>%
   filter(!is.na(log2FoldChange) & !is.na(sig)) %>%
   filter(delta_mC > 0)
 
+table(dmrs$sig, dmrs$delta_mC > 0.3)
+
 ggplot(dmrs, aes(x = delta_mC, y = log2FoldChange)) +
   geom_hline(yintercept=0, col="black") +
   geom_hline(yintercept=0, col="white", linetype="dashed") +
@@ -648,6 +661,16 @@ How many DE genes had a decrease compared to an increase overall?
 ```{r}
 de_dn <- sum(dmrsb$sig & dmrsb$log2FoldChange < 0, na.rm=TRUE)
 de_up <- sum(dmrsb$sig & dmrsb$log2FoldChange > 0, na.rm=TRUE)
+```
+Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+How many non-DE genes had a decrease compared to an increase overall?
+
+```{r}
+de_dn <- sum(!dmrsb$sig & dmrsb$log2FoldChange < 0, na.rm=TRUE)
+de_up <- sum(!dmrsb$sig & dmrsb$log2FoldChange > 0, na.rm=TRUE)
 ```
 Looks like there are `r de_dn` decreased DE genes and `r de_up` increased DE genes, where
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
