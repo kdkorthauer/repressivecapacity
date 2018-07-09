@@ -44,17 +44,27 @@ dir.create(datdir, showWarnings = FALSE)
 First download the relevant Supplementary Tables (S1, S2, S3, and S4) from the BioRxiv site.
 
 ```{r, downloadSupp}
-download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/0/170506-1.txt",
-              destfile =  file.path(datdir, "170506-1.txt"))
+supp_file1 <- file.path(datdir, "170506-1.txt")
+supp_file2 <- file.path(datdir, "170506-2.txt")
+supp_file3 <- file.path(datdir, "170506-3.txt")
+supp_file4 <- file.path(datdir, "170506-4.txt")
+baseurl <- "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/"
 
-download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/1/170506-2.txt",
-              destfile =  file.path(datdir, "170506-2.txt"))
+if (!file.exists(supp_file1)){
+  download.file(url = paste0(baseurl, "0/170506-1.txt"), destfile =  supp_file1)
+}
 
-download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/2/170506-3.txt",
-              destfile = file.path(datdir, "170506-3.txt"))
+if (!file.exists(supp_file2)){
+  download.file(url = paste0(baseurl, "1/170506-2.txt"), destfile =  supp_file2)
+}
 
-download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/3/170506-4.txt",
-              destfile =  file.path(datdir, "170506-4.txt"))
+if (!file.exists(supp_file3)){
+  download.file(url = paste0(baseurl, "2/170506-3.txt"), destfile =  supp_file3)
+}
+
+if (!file.exists(supp_file4)){
+  download.file(url = paste0(baseurl, "3/170506-4.txt"), destfile =  supp_file4)
+}
 ```
 
 Next we download the RNA-seq count table from GEO (accession number GSE102395)
@@ -207,7 +217,9 @@ ts4 <- ts4 %>%
          FC = `FoldChange_RNAseq(MCF7_control/ZF_D3A_plusDox)`) %>%
   mutate(A = 0.5*(log2(BaseMean_RNAseq) + 
                log2(FC*BaseMean_RNAseq))) %>%
-  mutate(big = ifelse(delta_mC > 0.3, "high", "low")) %>%
+  mutate(big = ifelse(delta_mC > 0.3, "high", "low"),
+         big = ifelse(delta_mC < 0.3, "low",
+                        ifelse(sig, "DMR and DE", "Not significant (DE)"))) %>%
   mutate(ABin = ntile(A, 9)) 
 table(ts4$sig, ts4$delta_mC > 0.3)
 
@@ -238,15 +250,13 @@ A1 <- ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
   theme_bw() +
   xlab(expression(paste(Delta, "mCG in UMR"))) +
   ylab("log2 fold change mRNA abundance") +
-  scale_color_manual(values = c("low" = "grey", "high" = "red"), 
-                     labels = c(expression(paste(Delta, "mCG < 0.3")),
-                                expression(paste(Delta, "mCG > 0.3")))) +
-  #geom_smooth(data = ts4) +
+  scale_color_manual(values=c("red", "grey", "black")) +
   geom_vline(xintercept=0.3, linetype="dashed", color="grey20") +
   geom_point(data =  ts4[ts4$gene == "SOX2",], col="darkred") +
   geom_label(data =  ts4[ts4$gene == "SOX2",], col="darkred",
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
   labs(color= "UMR effect size") +
+  geom_smooth()
   ylim(-3,3) 
 A1
 
@@ -445,7 +455,7 @@ B1 <- ggplot(ts4c ,
              aes(log2FC_RNAseq, fill = color)) +
   geom_histogram(breaks=seq(-3,3, by=1/5))+ 
   theme_bw() + 
-  scale_fill_manual(values=c("red", "blue")) + 
+  scale_fill_manual(values = c("#0072B2", "#E69F00")) +
   xlab("log2 mRNA fold change") + 
   ylab("Number of genes") +
   ggtitle("Gene - UMR Pairs") +

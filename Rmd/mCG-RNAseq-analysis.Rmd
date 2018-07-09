@@ -42,6 +42,7 @@ library(dmrseq)
 library(BiocParallel)
 library(chunked)
 library(DelayedMatrixStats)
+library(viridis)
 
 # data directory
 datdir <- "../DATA"
@@ -61,8 +62,23 @@ register(MulticoreParam(workers=ncores))
 
 # FDR significance levels for differential expression and DMR analyses
 fdrlevel.dmr <- 0.10
+fdrlevel.dmr.highconf <- 0.01
 fdrlevel.de <- 0.05
+
+# threshold for considering a gene "on" in control (mean normalized counts)
+on_thresh <- 20
 ```
+
+Note that we choose a standard FDR cutoff for differential expression (DE) of 
+`r fdrlevel.de`.
+We choose a liberal FDR cutoff of `r fdrlevel.dmr` for differentially methylated regions (DMRs)
+since that cutoff corresponds to a similar number of regions (around 10K) to the 
+number of DMRs identified by DSS in the Ford et al. (2017) study. Later on, we use 
+a more stringent FDR threshold of `r fdrlevel.dmr.highconf` when 
+calculating the odds of negative association of
+the high-confident DMRs with expression. A more thorough exploration and sensitivity
+analysis of the FDR level threshold impact on the resulting odds of association in
+the expected direction is also included in this analysis. 
 
 # Data download
 
@@ -457,8 +473,10 @@ To find these genes, we'll use the ZF ChIP-seq binding
 site data from the Supplementary table S1.
 
 ```{r, norm}
-download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/0/170506-1.txt",
+if (!file.exists(file.path(datdir, "170506-1.txt"))){
+  download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/0/170506-1.txt",
               destfile =  file.path(datdir, "170506-1.txt"))
+}
 
 ts1 <- fread(file.path(datdir, "170506-1.txt"), header=FALSE, skip=1)  #ZF Binding sites
 colnames(ts1) <- c("chr", "start", "end", "closest_gene_promoter", 
@@ -474,10 +492,10 @@ dmr_genes <- unique(c(annot$symbol[ol@to[mcols(ol)$distance <= 10000]],
 dmr_genes <- dmr_genes[!is.na(dmr_genes)]
 
 zf_genes <- (ts1 %>%
-  filter(distance_to_nearest_promoter <= 10000))$closest_gene_promoter
+  dplyr::filter(distance_to_nearest_promoter <= 10000))$closest_gene_promoter
 
 norm_genes <- unique((exp %>%
-  filter(!(gene %in% unique(c(dmr_genes, zf_genes)))))$gene)
+  dplyr::filter(!(gene %in% unique(c(dmr_genes, zf_genes)))))$gene)
 
 str(norm_genes)
 
@@ -508,9 +526,7 @@ dds <- estimateSizeFactors(dds,
 dds_global <- estimateSizeFactors(dds)
 table(dds$condition)
 
-on_genes <- rowMeans(counts(dds, normalize = TRUE)[,dds$condition == "Control"]) >= 20
-dds <- dds[on_genes,]
-dds_global <- dds_global[on_genes,]
+rowData(dds)$control_expr <- rowMeans(counts(dds, normalize = TRUE)[,dds$condition == "Control"])
 
 # check resulting distributions after normalization
 exp <- data.frame(counts(dds)) %>% 
@@ -561,6 +577,8 @@ dds <- DESeq(dds)
 res <- results(dds)
 
 sum(res$padj < fdrlevel.de, na.rm = TRUE)
+res$control_expr <- rowData(dds)$control_expr
+
 dds <- dds[!is.na(res$padj)]
 res <- res %>% na.omit()
 ```
@@ -619,13 +637,17 @@ annot_islands = build_annotations(genome = 'hg19',
                                   annotations = 'hg19_cpg_islands')
 dmrs$CGI <- countOverlaps(dmrs$prom, annot_islands, minoverlap = 100) > 0
 
+# save dmrs table 
+saveRDS(dmrs, file=file.path(resdir, "table_dmrseq_dmrs_genes_all.rds"))
 ```
 
 Prepare a figure that stratifies counts of DMR-DE pairs by CGI status and 
-direction of effect. Do this only for DMRs reaching 0.01 cutoff.
+direction of effect. Do this only for DMRs reaching `r fdrlevel.dmr.highconf` cutoff.
 
 ```{r}
-dmrs01 <- data.frame(dmrs) %>% filter(qval < 0.01)
+dmrs01 <- data.frame(dmrs) %>% 
+  filter(qval < fdrlevel.dmr.highconf) %>% 
+  filter(control_expr > on_thresh)
 tab.CGI <- table(dmrs01$CGI[dmrs01$padj < fdrlevel.de], 
                  dmrs01$log2FoldChange[dmrs01$padj < fdrlevel.de] < 0)
 chisq.test(tab.CGI)
@@ -654,10 +676,16 @@ pb
 saveRDS(pb, file = "../plots/barplot_CGI.rds")
 ```
 
+There are `r sum(dmrs01$padj < fdrlevel.de)` DE genes (at DESeq2 FDR < 0.05) 
+with dmrseq FDR < 0.01 that are located within
+2kb of a gene promoter.
+
 Do the same as above for all genes
 
 ```{r}
-dmrs01 <- data.frame(dmrs) %>% filter(qval < 0.01)
+dmrs01 <- data.frame(dmrs) %>% 
+  filter(qval < fdrlevel.dmr.highconf) %>% 
+  filter(control_expr > on_thresh)
 tab.CGI <- table(dmrs01$CGI, dmrs01$log2FoldChange < 0)
 chisq.test(tab.CGI)
 tab.tot <- table(dmrs01$log2FoldChange < 0)
@@ -685,13 +713,16 @@ pb
 saveRDS(pb, file = "../plots/barplot_CGI_allgenes.rds")
 ```
 
+There are `r nrow(dmrs01)` genes with dmrseq FDR < 0.01 that are located within
+2kb of a gene promoter.
 
 ## Scatterplot of methylation versus expression
 
 Now we create the scatterplot of methylation versus expression for dmrs.
 
 ```{r, dmrs-5a-dmrseq}
-dmrsa <- data.frame(dmrs@listData) %>% 
+dmrsa <- data.frame(dmrs@listData) %>%
+  filter(control_expr > on_thresh) %>%
   mutate(sig = padj < fdrlevel.de,
          FC = 2^log2FoldChange,
          delta_mC = meanDiff) %>%
@@ -723,6 +754,7 @@ From this figure it is a little more clear that most DE genes are down-regulated
 First in the style of the paper, for easy comparison:
 ```{r, dmrs-5b-orig-dmrseq, fig.height=4, fig.width=7}
 dmrsb <- dmrsa %>% 
+  filter(control_expr > on_thresh) %>%
   filter(delta_mC > 0.3) %>%
   mutate(FCcat = cut(FC,
                      breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
@@ -756,6 +788,7 @@ the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds o
 Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>% 
+  filter(control_expr > on_thresh) %>%
   filter(delta_mC > 0.3) %>%
   mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
                       "Not Differentially Expressed")) %>%
@@ -799,15 +832,15 @@ estimate.
 
 ```{r, dmrs-5a-dmrseq-alt}
 dmrsa <- data.frame(dmrs@listData) %>% 
+  filter(control_expr > on_thresh) %>%
   mutate(sig = padj < fdrlevel.de,
-         FC = 2^log2FoldChange,
-         delta_mC = meanDiff) %>%
+         FC = 2^log2FoldChange) %>%
   mutate(A = 0.5*(log2(baseMean) + 
                log2(FC*baseMean))) %>%
   mutate(ABin = ntile(A, 9)) %>%
   mutate(ptcol2 = ifelse(sig, "Differentially Expressed", 
                          "Not Differentially Expressed"),
-         ptcol3 = ifelse(qval > 0.01, "Not significant (DMR)", 
+         ptcol3 = ifelse(qval > fdrlevel.dmr.highconf, "Not significant (DMR)", 
                         ifelse(sig, "DMR and DE", "Not significant (DE)"))) %>%
   filter(!is.na(log2FoldChange) & !is.na(sig)) 
 
@@ -825,7 +858,7 @@ ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
   ggtitle("dmrseq DMRs") +
-  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+  geom_vline(xintercept=min(dmrsa$stat[dmrsa$qval<fdrlevel.dmr.highconf]), 
              linetype="dashed", color="grey20")
 ```
 
@@ -848,7 +881,7 @@ A2 <- ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
   ggtitle("dmrseq DMRs") +
   ylim(-3,3) + 
-  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+  geom_vline(xintercept=min(dmrsa$stat[dmrsa$qval < fdrlevel.dmr.highconf]), 
              linetype="dashed", color="grey20")
 A2 
 
@@ -872,7 +905,7 @@ A2 <- ggplot(dmrsa %>% filter(CGI), aes(x = stat, y = log2FoldChange)) +
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
   ggtitle("dmrseq DMRs") +
   ylim(-3,3) + 
-  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<fdrlevel.dmr.highconf]), 
              linetype="dashed", color="grey20")
 A2 
 
@@ -892,7 +925,7 @@ A2 <- ggplot(dmrsa %>% filter(!CGI), aes(x = stat, y = log2FoldChange)) +
   labs(color="Significance")  +
   ggtitle("dmrseq DMRs") +
   ylim(-3,3) + 
-  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<0.01]), 
+  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<fdrlevel.dmr.highconf]), 
              linetype="dashed", color="grey20")
 A2 
 
@@ -907,7 +940,8 @@ From this figure it is much more clear that most DE genes are down-regulated.
 First in the style of the paper for easy comparison:
 ```{r, dmrs-5b-orig-dmrseq-alt, fig.height=4, fig.width=7}
 dmrsb <- dmrsa %>% 
-  filter(qval < 0.01) %>%
+  filter(control_expr > on_thresh) %>%
+  filter(qval < fdrlevel.dmr.highconf) %>%
   mutate(FCcat = cut(FC,
                      breaks=c(0,0.3,0.5,0.7,0.9,1.1,Inf))) %>%
   mutate(color = ifelse(FCcat %in% c("(0.9,1.1]", "(1.1,Inf]"), "Increase", 
@@ -956,7 +990,8 @@ How many genes were significantly DE?
 de <- sum(dmrsb$sig, na.rm=TRUE)
 ee <- sum(!dmrsb$sig, na.rm=TRUE)
 ```
-Looks like there are `r de` significantly DE genes and `r ee` non-DE genes (at FDR 0.05), where
+Looks like there are `r de` significantly DE genes and `r ee` non-DE genes (at FDR 
+`r fdrlevel.de`), where
 the proportion decreased is `r signif(de / (de + ee),3)` and the odds of decrease is
 `r signif(de / ee,3)`.
 
@@ -978,7 +1013,8 @@ odds.ci
 Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrsa %>%
-  filter(qval < 0.01) %>%
+  filter(control_expr > on_thresh) %>%
+  filter(qval < fdrlevel.dmr.highconf) %>%
   mutate(sig = ifelse(padj < fdrlevel.de, "Differentially Expressed", 
                       "Not Differentially Expressed")) %>%
   mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
@@ -1000,48 +1036,28 @@ ggplot(dmrsc, aes(FCcat, fill = color)) +
 Save these plots (all together and stratified by CGI) for plotting in main figures.
 
 ```{r, extraplots2}
-B2 <- ggplot(dmrsc %>% 
-               filter(sig == "Differentially Expressed"),
-             aes(x=log2FoldChange)) +
-  geom_histogram(breaks=seq(-3,3, by=1/5), 
-                 aes(fill=color)) + 
-  scale_fill_manual(values=c("red", "blue")) + 
-  theme_bw() + 
-  xlab("log2 mRNA fold change") + 
-  ylab("Number of genes") +
-  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
-  labs(fill="Direction \nof effect") +
-  xlim(-3,3) +
-  ylim(0,329)
-B2
-# save plot for mutlipanel figure
-saveRDS(B2, file="../plots/B2.rds")
-
-# including non - DE
 B2 <- ggplot(dmrsc,
              aes(x=log2FoldChange)) +
   geom_histogram(breaks=seq(-3,3, by=1/5), 
                  aes(fill=color)) + 
-  scale_fill_manual(values=c("red", "blue")) + 
+  scale_fill_manual(values = c("#0072B2", "#E69F00")) + 
   theme_bw() + 
   xlab("log2 mRNA fold change") + 
   ylab("Number of genes") +
-  ggtitle("Gene - dmrseq DMR Pairs by DE significance") +
+  ggtitle("Gene - dmrseq DMR Pairs") +
   labs(fill="Direction \nof effect") +
   xlim(-3,3) 
 B2
 # save plot for mutlipanel figure
-saveRDS(B2, file="../plots/B2_allgenes.rds")
-
+saveRDS(B2, file="../plots/B2.rds")
 
 # just CGI
 B2 <- ggplot(dmrsc %>% 
-               filter(sig == "Differentially Expressed") %>%
                filter(CGI),
              aes(x=log2FoldChange)) +
   geom_histogram(breaks=seq(-3,3, by=1/5), 
                  aes(fill=color)) + 
-  scale_fill_manual(values=c("red", "blue")) + 
+  scale_fill_manual(values = c("#0072B2", "#E69F00")) + 
   theme_bw() + 
   xlab("log2 mRNA fold change") + 
   ylab("Number of genes") +
@@ -1054,12 +1070,11 @@ saveRDS(B2, file="../plots/B2_cgi.rds")
 
 # just nonCGI
 B2 <- ggplot(dmrsc %>% 
-               filter(sig == "Differentially Expressed") %>%
                filter(!CGI),
              aes(x=log2FoldChange)) +
   geom_histogram(breaks=seq(-3,3, by=1/5), 
                  aes(fill=color)) + 
-  scale_fill_manual(values=c("red", "blue")) + 
+  scale_fill_manual(values = c("#0072B2", "#E69F00")) +
   theme_bw() + 
   xlab("log2 mRNA fold change") + 
   ylab("Number of genes") +
@@ -1097,6 +1112,192 @@ odds.ci
 
 This shows that DE genes are **overwhelmingly** 
 downregulated when their promoter is demethylated.
+
+# Construct FDR vs Odds plots
+
+Here, we will create summary plots to characterize the relationship between the FDR
+cutoffs (for both differential expression and differential methylation) with the
+odds of the association between expression and methylation being negatively correlated.
+In contrast to the above analyses, instead of picking a single (rather arbitrary) 
+cutoff level of `r fdrlevel.de` for DE and `r fdrlevel.dmr.highconf for DMRs, we will explore
+many different cutoffs and examine how the odds changes for different levels of these
+FDR cutoffs.
+
+We will also explore different cutoffs for the mean number of normalized counts in the
+eight control samples used for considering whether a gene is "on" or not. This is
+in contrast to using a (rather arbitrary) single cutoff of 20 in the above analyses.
+
+We use the data table that contains all of the DMRs at the liberal FDR
+threshold of `r fdrlevel.dmr` and all of the genes that were within 2kb of the 
+promoter of those DMRs. This results in `r scales::comma(nrow(dmrs))` gene:DMR 
+pairs. We'll create a function to calculate the odds for a given threshold of
+DMR FDR, DE FDR, and count threshold for "on" control genes, as well as CGI status. 
+
+```{r}
+calc_odds <- function(dmrs, fdr.dmr, fdr.de, x.on, CGI = NULL, level = 0.95){
+    dmrs.filt <- data.frame(dmrs) %>% 
+      filter(qval < fdr.dmr) %>% 
+      filter(padj < fdr.de) %>%
+      filter(control_expr > x.on)
+    if (!is.null(CGI)){
+      if (CGI == TRUE){
+        dmrs.filt <- dmrs.filt %>% filter(CGI == TRUE)
+      }else{
+        dmrs.filt <- dmrs.filt %>% filter(CGI == FALSE)
+      }
+    }
+    
+    n_expected <- sum(dmrs.filt$log2FoldChange < 0)
+    n_unexpected <- sum(dmrs.filt$log2FoldChange >= 0)
+  
+    n <- n_expected + n_unexpected
+    prop <- n_expected / n
+    odds <- n_expected / n_unexpected
+
+    prop.ci <- prop + c(-1,1)*qnorm(1-(1-level)/2)*sqrt(prop*(1-prop)/n)
+    prop.ci[1] <- max(prop.ci[1], 0)
+    prop.ci[2] <- min(prop.ci[2], 1)
+    odds.ci <- prop.ci*n / ((1-prop.ci)*n)
+
+    return(list(odds=odds, ci.lower = odds.ci[1], ci.upper = odds.ci[2],
+           level = level, n = n))
+}
+```
+
+Next, we'll create a data frame that contains the odds and CIs for the range of
+thresholds we are interested in (dmrseq DMR FDR 0.005-0.10, DEseq2 DE FDR
+1e-5-1, on count 0 to 100).
+
+```{r}
+xon <- seq(0,250, by=50)
+dmr.fdr <- c(0.005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.10)
+de.fdr <- c(1e-6, 1e-5, 1e-4, 1e-3, 0.005, 0.01, 0.025, 0.05, 0.10, 0.25, 0.5, 0.75, 1)
+
+df <- df.cgi <- df.non <- data.frame(matrix(ncol = 8, 
+                        nrow = length(xon) * length(dmr.fdr) * length(de.fdr)))
+colnames(df) <- colnames(df.cgi) <- colnames(df.non) <- c("fdr.dmr", "fdr.de", "count.on", "odds", 
+                  "ci.lower", "ci.upper", "level", "n")
+ct <- 1
+for (x in xon){
+  for (y in dmr.fdr){
+    for(z in de.fdr){
+      df[ct, 1:3] <- c(y, z, x)
+      df[ct, 4:8] <- unlist(calc_odds(dmrs, y, z, x, CGI = NULL, level = 0.95))
+      
+      df.cgi[ct, 1:3] <- c(y, z, x)
+      df.cgi[ct, 4:8] <- unlist(calc_odds(dmrs, y, z, x, CGI = TRUE, level = 0.95))
+      
+      df.non[ct, 1:3] <- c(y, z, x)
+      df.non[ct, 4:8] <- unlist(calc_odds(dmrs, y, z, x, CGI = FALSE, level = 0.95))
+      
+      ct <- ct + 1
+    }
+  }
+}
+
+df.cgi$cgi <- TRUE
+df.non$cgi <- FALSE
+df.cgi <- bind_rows(df.cgi, df.non)
+df$fdr.dmr <- factor(df$fdr.dmr) 
+df.cgi$fdr.dmr <- factor(df.cgi$fdr.dmr) 
+df <- df %>% na.omit()
+df.cgi <- df.cgi %>% na.omit()
+
+# save table as rds for use in shiny app
+saveRDS(df, file = file.path(resdir, "odds.table.rds"))
+saveRDS(df.cgi, file = file.path(resdir, "odds.table.cgi.rds"))
+
+```
+
+Now, we'll create some static plots relating these quantities. 
+
+```{r, width = 15, height = 10}
+
+oddsplot_fixedx <- function(df, xon, ylims = c(0,60)){
+  ggplot(df %>% filter(count.on == xon),
+         aes(x = fdr.de, y = odds, group = fdr.dmr, color = fdr.dmr, 
+             fill = fdr.dmr)) +
+    scale_y_continuous(trans= "log2") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+    geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.3, linetype=0) +
+    geom_point() + 
+    geom_line() +
+    #viridis::scale_color_viridis(discrete = TRUE) +
+    theme_bw() +
+    xlab("DESeq2 FDR") +
+    ylab("Odds of gene repression") +
+    labs(color = "dmrseq FDR", fill= "dmrseq FDR") +
+    ggtitle(paste0("Genes with average count > ", xon)) +
+    expand_limits(y=ylims)
+}
+
+plist <- lapply(unique(df$count.on), function(x)
+                oddsplot_fixedx(df, x))
+# save plot list as rds 
+saveRDS(plist, file ="../plots/odds.plot.list.rds")
+
+plot_grid(plotlist=plist, ncol= 3)
+```
+
+```{r}
+ggplot(df %>% filter(count.on %in% c(0,50,200)),
+         aes(x = fdr.de, y = odds, group = fdr.dmr, color = fdr.dmr, 
+             fill = fdr.dmr)) +
+    scale_y_continuous(trans= "log2") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+    geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.3, linetype=0) +
+    geom_point() + 
+    geom_line() +
+    #viridis::scale_color_viridis(discrete = TRUE) +
+    theme_bw() +
+    xlab("DESeq2 FDR") +
+    ylab("Odds of gene repression") +
+    labs(color = "dmrseq FDR", fill= "dmrseq FDR") +
+    expand_limits(y=ylims) +
+  facet_grid(~ count.on)
+ggsave("../plots/odds.plot.pdf", width = 13, height = 5)
+
+```
+
+We also make a plot to show the number of genes passing each threshold for the 
+previous plot.
+
+```{r}
+ggplot(df %>% filter(count.on %in% c(0,50,100)),
+         aes(x = fdr.de, y = n, group = fdr.dmr, color = fdr.dmr, 
+             fill = fdr.dmr)) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+    geom_point() + 
+    geom_line() +
+    #viridis::scale_color_viridis(discrete = TRUE) +
+    theme_bw() +
+    xlab("DESeq2 FDR") +
+    ylab("Number of genes") +
+    labs(color = "dmrseq FDR", fill= "dmrseq FDR") +
+    expand_limits(y=ylims) +
+  facet_grid(~ count.on)
+ggsave("../plots/odds.plot.n.pdf", width = 13, height = 5)
+```
+
+We also make the odds plot stratified by CG island status.
+
+```{r}
+ggplot(df.cgi %>% filter(count.on %in% c(50)),
+         aes(x = fdr.de, y = odds, group = fdr.dmr, color = fdr.dmr, 
+             fill = fdr.dmr)) +
+    scale_y_continuous(trans= "log2") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+    geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.3, linetype=0) +
+    geom_point() + 
+    geom_line() +
+    #viridis::scale_color_viridis(discrete = TRUE) +
+    theme_bw() +
+    xlab("DESeq2 FDR") +
+    ylab("Odds of gene repression") +
+    labs(color = "dmrseq FDR", fill= "dmrseq FDR") +
+    expand_limits(y=ylims) +
+  facet_grid(~ cgi)
+```
 
 # Session Information
 
