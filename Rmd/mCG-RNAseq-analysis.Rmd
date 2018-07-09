@@ -965,7 +965,7 @@ The confidence intervals for these quantities are:
 ```{r}
 n <- de + ee
 prop <- de / n
-odds <- de /
+odds <- de / ee
 
 prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
 odds.ci <- prop.ci*n / ((1-prop.ci)*n)
