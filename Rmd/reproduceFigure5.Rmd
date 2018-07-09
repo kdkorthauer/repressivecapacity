@@ -554,6 +554,7 @@ po <- sum(countOverlaps(makeGRangesFromDataFrame(dmrs),
                   makeGRangesFromDataFrame(ts4))) / nrow(dmrs)
 ```
 
+There are `r nrow(dmrs)` DSS dmrs that are within 2kb of a gene promoter.
 These promoter-DMRs overlap highly with the UMRs (`r signif(100*po,3)`%)
 Now that we have a set of DMR-Gene associations, we'll add the the DE information 
 to the DMR data frame.
@@ -574,7 +575,7 @@ Now we create the scatterplot like Figure 5A for dmrs.
 
 ```{r, dmrs-5a}
 dmrs <- data.frame(dmrs@listData) %>% 
-  mutate(sig = padj < 0.01,
+  mutate(sig = padj < 0.05,
          FC = 2^log2FoldChange,
          delta_mC = methylation_level_in_ZF_D3A_plus_dox -
            methylation_level_in_MCF7_control) %>%
@@ -639,7 +640,7 @@ Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
 dmrsc <- dmrs %>% 
   filter(delta_mC > 0.3) %>%
-  mutate(sig = padj < 0.01) %>%
+  mutate(sig = padj < 0.05) %>%
   mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) %>%
   mutate(FCcat = cut(log2FoldChange, breaks = c(-6,-4,-2,-1,-0.5,0,0.5,1,2,4,6))) %>%
   mutate(FCcat = factor(FCcat, levels = (levels(FCcat)))) %>%
