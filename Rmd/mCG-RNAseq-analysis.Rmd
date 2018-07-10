@@ -587,7 +587,31 @@ In contrast, here are the results using global normalization:
 
 ```{r}
 dds_global <- DESeq(dds_global)
-sum(results(dds_global)$padj < fdrlevel.de, na.rm = TRUE)
+res_global <- results(dds_global)
+sum(res_global$padj < fdrlevel.de, na.rm = TRUE)
+
+de_global <- data.frame(res_global) %>% filter(padj < 0.05)
+de_control <- data.frame(res) %>% filter(padj < 0.05)
+sum(rownames(de_control) %in% rownames(de_global))
+ 
+de <- data.frame(res) %>% filter(padj < 0.05)
+de$global <- rownames(de_control) %in% rownames(de_global)
+de <- de %>%
+  mutate(glob = ifelse(global, paste0("Common DE genes (n=", sum(global), ")"),
+                         paste0("Control-gene normalization only (n=", sum(!global), ")")))
+
+h <- ggplot(de, aes(x=log2FoldChange, group=glob, color=glob, fill=glob)) + 
+  geom_histogram(aes(y = ..density..), bins = 25) +
+  theme_bw() +
+  labs(color = "DE genes", fill = "DE genes") +
+  scale_color_manual(values = c("darkblue", "darkred")) +
+  scale_fill_manual(values = c("darkblue", "darkred")) +
+  facet_grid(~glob) +
+  xlim(-4,4) +
+  xlab("log2 Fold Change mRNA") +
+  theme(legend.position = "none")
+h
+saveRDS(h, file=file.path("../plots/extraDEgenes.rds"))
 ```
 
 # Association with effect size
@@ -935,6 +959,8 @@ saveRDS(A2, file="../plots/A2_noncgi.rds")
 
 From this figure it is much more clear that most DE genes are down-regulated.
 
+
+
 ## Histogram of the observed expression fold changes in DMRs
 
 First in the style of the paper for easy comparison:
@@ -1009,6 +1035,14 @@ prop.ci
 odds.ci
 ```
 
+Also note that `r signif(sum(dmrsb$padj < 0.10)/nrow(dmrsb)*100, 3)`% of genes
+are DE at FDR 0.10 (dmrseq FDR 0.01). This same number for dmrseq FDR 0.10 is
+`r signif(sum(dmrsa$padj < 0.10)/nrow(dmrsa)*100, 3)`%.
+
+Also note that SOX2 is at the 
+`r signif((1-sum(dmrsa$stat > dmrsa$stat[dmrsa$gene== "SOX2"]) / nrow(dmrsa))*100, 3)`
+percentile of all DMRs. The same number for dmrseq FDR 0.01 is 
+`r signif((1-sum(dmrsb$stat > dmrsb$stat[dmrsb$gene== "SOX2"]) / nrow(dmrsb))*100, 3)`
 
 Next in the improved symmetrical style and separating by DE status:
 ```{r,fig.height=5, fig.width=10} 
@@ -1119,7 +1153,7 @@ Here, we will create summary plots to characterize the relationship between the 
 cutoffs (for both differential expression and differential methylation) with the
 odds of the association between expression and methylation being negatively correlated.
 In contrast to the above analyses, instead of picking a single (rather arbitrary) 
-cutoff level of `r fdrlevel.de` for DE and `r fdrlevel.dmr.highconf for DMRs, we will explore
+cutoff level of `r fdrlevel.de` for DE and `r fdrlevel.dmr.highconf` for DMRs, we will explore
 many different cutoffs and examine how the odds changes for different levels of these
 FDR cutoffs.
 

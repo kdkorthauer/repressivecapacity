@@ -304,6 +304,10 @@ Looks like there are `r de_dn` decreased genes and `r de_up` increased genes, wh
 the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
 `r signif(de_dn / de_up,3)`.
 
+Also note that SOX2 is at the 
+`r signif((1-sum(ts4b$delta_mC > ts4b$delta_mC[ts4b$gene== "SOX2"]) / nrow(ts4b))*100, 3)`
+percentile of all DMRs.
+
 # Alternate versions of Figure 5
 
 Next we'll try and create alternate versions of these Figures to understand the

@@ -26,7 +26,7 @@ B1 <- readRDS(file="B1.rds") +
   ggtitle(expression(paste("Gene - UMR pairs (", Delta, "mCG > 0.3)"))) +
   xlab("log2 mRNA Fold Change (+dox/no-dox)")
 B2 <- readRDS(file="B2.rds") +
-  ggtitle("Gene (FDR < 0.05) - DMR pairs (FDR < 0.01)") +
+  ggtitle("Gene - DMR pairs (FDR < 0.01)") +
   xlab("log2 mRNA Fold Change (+dox/no-dox)") 
 
 
@@ -152,7 +152,12 @@ pS3 <- plot_grid(A + theme(legend.position="none"),
 plot_grid(pS3, leg_A, ncol = 1, rel_heights = c(1, 0.05))
 ggsave("figS3.pdf", width=4.5, height=9)
 
-### FIGURE S4 - scatterplot meth expr faceted by CGI status
+### FIGURE S4 - dist of fold changes of extra DE genes
+A <- readRDS(file.path("../plots/extraDEgenes.rds"))
+A
+ggsave("figS4.pdf", height=3, width =7)
+
+### FIGURE S5 - scatterplot meth expr faceted by CGI status
 A <- readRDS(file="A2_cgi.rds") + ylab("log2 Fold Change (+dox/no-dox)") 
 B <- readRDS(file="B2_cgi.rds") + xlab("log2 mRNA Fold Change (+dox/no-dox)") 
 C <- readRDS(file="A2_noncgi.rds") + ylab("log2 Fold Change (+dox/no-dox)") 
@@ -167,9 +172,9 @@ pS4 <- plot_grid(A + theme(legend.position="none") + ggtitle("") + expand_limits
                  ncol = 2, labels = c("A", "", "B", ""))
 pS4 + draw_label("non-CG island promoters", size = 13, x=0.5, y=0.475) + 
   draw_label("CG island promoters", size = 13, x=0.5, y=0.975)
-ggsave("figS4.pdf", width=8.6, height=7)
+ggsave("figS5.pdf", width=8.6, height=7)
 
-### FIGURE S5 - figure 2 by CGI status
+### FIGURE S6 - figure 2 by CGI status
 df <- readRDS(file.path(resdir, "odds.table.cgi.rds"))
 df <- df %>% 
   mutate(ci.upper = pmin(ci.upper, 60),
@@ -188,9 +193,9 @@ ggplot(df %>% filter(count.on == 50),
   labs(color = "dmrseq FDR", fill= "dmrseq FDR") +
   facet_wrap(~ cgi)  +
   coord_cartesian(ylim = c(1, 60)) 
-ggsave("../plots/figS5.pdf", width = 8.6, height = 4)
+ggsave("../plots/figS6.pdf", width = 8.6, height = 4)
 
-### FIGURE S6 - scatterplot h3k4 and RNA pol II faceted by CGI status
+### FIGURE S7 - scatterplot h3k4 and RNA pol II faceted by CGI status
 # load subfigures
 A <- readRDS(file="stat_vs_H3K4me3_scatter_DMR_CGI.rds") + xlim(0,40) +
   ylab("log2 Fold Change (+dox/no-dox)") +
@@ -207,5 +212,5 @@ D <- readRDS(file="stat_vs_RNApolII_scatter_DMR_nonCGI.rds")  + xlim(0,40) +
 
 plot_grid(A, B, C, D,
           ncol = 2, labels = LETTERS[1:4])
-ggsave("figS6.pdf", width=8.6, height=7)
+ggsave("figS7.pdf", width=8.6, height=7)
 
