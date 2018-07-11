@@ -43,6 +43,8 @@ library(BiocParallel)
 library(chunked)
 library(DelayedMatrixStats)
 library(viridis)
+library(cowplot)
+library(knitr)
 
 # data directory
 datdir <- "../DATA"
@@ -66,7 +68,7 @@ fdrlevel.dmr.highconf <- 0.01
 fdrlevel.de <- 0.05
 
 # threshold for considering a gene "on" in control (mean normalized counts)
-on_thresh <- 20
+on_thresh <- 50
 ```
 
 Note that we choose a standard FDR cutoff for differential expression (DE) of 
@@ -100,7 +102,7 @@ Since we are only interested in the CpG methylation context, we also filter
 these files by rows where the 4th column is equal to `CG`. This step requires that
 the system has the `awk` command available.
 
-```{r, downloadGEO}
+```{r, downloadGEO, eval = FALSE}
 # methylation counts
 meta = pData(phenoData(getGEO("GSE102395")[[1]]))
 filePaths <- as.character(meta$supplementary_file_1[grepl("WGBS", meta$description)])
@@ -138,7 +140,7 @@ for (file in filePaths){
 Since one of the files failed download, manually download from Lister lab's
 public website (per email with Ethan Ford on 3/21/2018).
 
-```{r, downloadFailedFile}
+```{r, downloadFailedFile, eval = FALSE}
 if (length(corrupt) == 1){
   if (!file.exists(corrupt) && !file.exists(gsub(".gz", "", corrupt))){
      download.file(url = "http://cpebrazor.ivec.org/public/listerlab/ethan/Public/MCF7_ZF_DNMT3A_doxInduced_rep2.allC.gz",
@@ -167,7 +169,7 @@ if (length(corrupt) == 1){
 
 Next, we download the expression count matrix.
 
-```{r, downloadGEO2}
+```{r, downloadGEO2, eval = FALSE}
 # expression counts
 file <- file.path(datdir, "GSE102395_MCF7_ZF_DNMT3A_countstable.txt")
 
@@ -405,6 +407,30 @@ plot(density(dmrs.dss$meanDiff),
      xlab = "Mean proportion difference in methylation")
 lines(density(regions[regions$qval < fdrlevel.dmr, ]$meanDiff),col="blue")
 
+```
+
+Here we examine specific regions top-ranked by DSS but not significant by dmrseq.
+We also look at top ranked regions by dmrseq that are not found by DSS.
+
+```{r}
+ol <- findOverlaps(regions, dmrs.dss)
+rnks <- 1:25
+
+dmrseq_only <- regions[-unique(ol@from),]
+dmrseq_only <- dmrseq_only[order(abs(dmrseq_only$stat), decreasing = TRUE), ]
+
+pdf("../plots/figS2a.pdf", width = 7, height = 3)
+plotDMRs(bs, regions=dmrseq_only[rnks,], testCovariate="condition")
+dev.off()
+
+DSS_only <- dmrs.dss[-unique(ol@to),]
+DSS_only <- DSS_only[order(DSS_only$methylation_level_in_ZF_D3A_plus_dox -
+                           DSS_only$methylation_level_in_MCF7_control, decreasing = TRUE), ]
+
+pdf("../plots/figS2b.pdf", width = 7, height = 3)
+plotDMRs(bs, regions=DSS_only[rnks,], testCovariate="condition", 
+         qval = FALSE, stat = FALSE)
+dev.off()
 ```
 
 # DE analysis
@@ -763,7 +789,7 @@ ggplot(dmrsa, aes(x = delta_mC, y = log2FoldChange)) +
   xlab(expression(paste(Delta, "mCG in DMR"))) +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("black", "red")) +
-  geom_smooth() +
+  geom_smooth(method = "loess", span = 0.25) +
   labs(color="Differentially\n Expressed")  +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
@@ -876,7 +902,7 @@ ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   xlab("Region test statistic") +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("red", "black")) +
-  geom_smooth() +
+  geom_smooth(method = "loess", span = 0.25) +
   labs(color="Significance")  +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
@@ -898,7 +924,7 @@ A2 <- ggplot(dmrsa, aes(x = stat, y = log2FoldChange)) +
   xlab("Region test statistic") +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("red", "black", "grey")) +
-  geom_smooth() +
+  geom_smooth(method = "loess", span = 0.25) +
   labs(color="Significance")  +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
@@ -922,7 +948,7 @@ A2 <- ggplot(dmrsa %>% filter(CGI), aes(x = stat, y = log2FoldChange)) +
   xlab("Region test statistic") +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("red", "black", "grey")) +
-  geom_smooth() +
+  geom_smooth(method = "loess", span = 0.25) +
   labs(color="Significance")  +
   geom_point(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred") +
   geom_label(data =  dmrsa[dmrsa$gene == "SOX2",], col="darkred",
@@ -945,7 +971,7 @@ A2 <- ggplot(dmrsa %>% filter(!CGI), aes(x = stat, y = log2FoldChange)) +
   xlab("Region test statistic") +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("red", "black", "grey")) +
-  geom_smooth() +
+  geom_smooth(method = "loess", span = 0.25) +
   labs(color="Significance")  +
   ggtitle("dmrseq DMRs") +
   ylim(-3,3) + 
@@ -1002,11 +1028,13 @@ n <- de_dn + de_up
 prop <- de_dn / n
 odds <- de_dn / de_up
 
+se_lo <- sqrt(1/de_dn + 1/de_up)*qnorm(0.975)
+lodds.ci <- log(odds) + c(-1,1)*se_lo
+odds.ci <- exp(lodds.ci)
 prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
-odds.ci <- prop.ci*n / ((1-prop.ci)*n)
 
-prop.ci
 odds.ci
+prop.ci
 ```
 
 
@@ -1028,11 +1056,13 @@ n <- de + ee
 prop <- de / n
 odds <- de / ee
 
+se_lo <- sqrt(1/de + 1/ee)*qnorm(0.975)
+lodds.ci <- log(odds) + c(-1,1)*se_lo
+odds.ci <- exp(lodds.ci)
 prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
-odds.ci <- prop.ci*n / ((1-prop.ci)*n)
 
-prop.ci
 odds.ci
+prop.ci
 ```
 
 Also note that `r signif(sum(dmrsb$padj < 0.10)/nrow(dmrsb)*100, 3)`% of genes
@@ -1137,15 +1167,44 @@ n <- de_dn + de_up
 prop <- de_dn / n
 odds <- de_dn / de_up
 
+se_lo <- sqrt(1/de_dn + 1/de_up)*qnorm(0.975)
+lodds.ci <- log(odds) + c(-1,1)*se_lo
+odds.ci <- exp(lodds.ci)
 prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
-odds.ci <- prop.ci*n / ((1-prop.ci)*n)
 
-prop.ci
 odds.ci
+prop.ci
 ```
 
 This shows that DE genes are **overwhelmingly** 
 downregulated when their promoter is demethylated.
+
+How many genes are DE and repressed compared to all other genes?
+
+```{r}
+de_dn <- sum(dmrsc$padj < 0.10 & dmrsc$log2FoldChange < 0, na.rm=TRUE)
+de_up <- nrow(dmrsc) - de_dn
+```
+Looks like there are `r de_dn` decreased DE genes and `r de_up` other, where
+the proportion decreased is `r signif(de_dn / (de_dn + de_up),3)` and the odds of decrease is
+`r signif(de_dn / de_up,3)`.
+
+The confidence intervals for these quantities are: 
+
+```{r}
+n <- de_dn + de_up
+prop <- de_dn / n
+odds <- de_dn / de_up
+
+se_lo <- sqrt(1/de_dn + 1/de_up)*qnorm(0.975)
+lodds.ci <- log(odds) + c(-1,1)*se_lo
+odds.ci <- exp(lodds.ci)
+prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+
+odds.ci
+prop.ci
+```
+
 
 # Construct FDR vs Odds plots
 
@@ -1184,17 +1243,32 @@ calc_odds <- function(dmrs, fdr.dmr, fdr.de, x.on, CGI = NULL, level = 0.95){
     n_expected <- sum(dmrs.filt$log2FoldChange < 0)
     n_unexpected <- sum(dmrs.filt$log2FoldChange >= 0)
   
-    n <- n_expected + n_unexpected
-    prop <- n_expected / n
+    o.n <- n_expected + n_unexpected
     odds <- n_expected / n_unexpected
 
-    prop.ci <- prop + c(-1,1)*qnorm(1-(1-level)/2)*sqrt(prop*(1-prop)/n)
-    prop.ci[1] <- max(prop.ci[1], 0)
-    prop.ci[2] <- min(prop.ci[2], 1)
-    odds.ci <- prop.ci*n / ((1-prop.ci)*n)
+    se_lo <- sqrt(1/n_expected + 1/n_unexpected)*qnorm(1-(1-level)/2)
+    lodds.ci <- log(odds) + c(-1,1)*se_lo
+    odds.ci <- exp(lodds.ci)
+    
+    
+    
+    dmrs.filt <- data.frame(dmrs) %>% 
+      filter(qval < fdr.dmr) %>% 
+      filter(control_expr > x.on)
+    if (!is.null(CGI)){
+      if (CGI == TRUE){
+        dmrs.filt <- dmrs.filt %>% filter(CGI == TRUE)
+      }else{
+        dmrs.filt <- dmrs.filt %>% filter(CGI == FALSE)
+      }
+    }
+    p.n <- nrow(dmrs.filt) 
+    prop <- sum(dmrs.filt$log2FoldChange < 0 & dmrs.filt$padj < fdr.de) / p.n
+    prop.ci <- prop + c(-1,1)*qnorm(1-(1-level)/2)*sqrt(prop*(1-prop)/p.n)
 
-    return(list(odds=odds, ci.lower = odds.ci[1], ci.upper = odds.ci[2],
-           level = level, n = n))
+    return(list(odds=odds, o.ci.lower = odds.ci[1], o.ci.upper = odds.ci[2], o.n = o.n,
+                prop=prop, p.ci.lower = prop.ci[1], p.ci.upper = prop.ci[2], p.n = p.n,
+                level = level, n = n))
 }
 ```
 
@@ -1203,26 +1277,28 @@ thresholds we are interested in (dmrseq DMR FDR 0.005-0.10, DEseq2 DE FDR
 1e-5-1, on count 0 to 100).
 
 ```{r}
-xon <- seq(0,250, by=50)
-dmr.fdr <- c(0.005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.10)
-de.fdr <- c(1e-6, 1e-5, 1e-4, 1e-3, 0.005, 0.01, 0.025, 0.05, 0.10, 0.25, 0.5, 0.75, 1)
+xon <- c(0,50,250)
+dmr.fdr <- c(0.0034, 0.005, 0.01, 0.025, 0.05, 0.10)
+de.fdr <- c(1e-5, 0.01, 0.05, 0.10, 0.5, 0.75, 1)
 
-df <- df.cgi <- df.non <- data.frame(matrix(ncol = 8, 
+df <- df.cgi <- df.non <- data.frame(matrix(ncol = 13, 
                         nrow = length(xon) * length(dmr.fdr) * length(de.fdr)))
-colnames(df) <- colnames(df.cgi) <- colnames(df.non) <- c("fdr.dmr", "fdr.de", "count.on", "odds", 
-                  "ci.lower", "ci.upper", "level", "n")
+colnames(df) <- colnames(df.cgi) <- colnames(df.non) <- c("fdr.dmr", "fdr.de", "count.on", 
+                  "odds", "o.ci.lower", "o.ci.upper", "o.n", 
+                  "prop", "p.ci.lower", "p.ci.upper", "p.n",
+                  "level", "n")
 ct <- 1
 for (x in xon){
   for (y in dmr.fdr){
     for(z in de.fdr){
       df[ct, 1:3] <- c(y, z, x)
-      df[ct, 4:8] <- unlist(calc_odds(dmrs, y, z, x, CGI = NULL, level = 0.95))
+      df[ct, 4:13] <- unlist(calc_odds(dmrs, y, z, x, CGI = NULL, level = 0.95))
       
       df.cgi[ct, 1:3] <- c(y, z, x)
-      df.cgi[ct, 4:8] <- unlist(calc_odds(dmrs, y, z, x, CGI = TRUE, level = 0.95))
+      df.cgi[ct, 4:13] <- unlist(calc_odds(dmrs, y, z, x, CGI = TRUE, level = 0.95))
       
       df.non[ct, 1:3] <- c(y, z, x)
-      df.non[ct, 4:8] <- unlist(calc_odds(dmrs, y, z, x, CGI = FALSE, level = 0.95))
+      df.non[ct, 4:13] <- unlist(calc_odds(dmrs, y, z, x, CGI = FALSE, level = 0.95))
       
       ct <- ct + 1
     }
@@ -1243,6 +1319,20 @@ saveRDS(df.cgi, file = file.path(resdir, "odds.table.cgi.rds"))
 
 ```
 
+Print out table.
+
+```{r}
+# prop table (of being significantly repressed)
+kable(df %>% filter(count.on ==50) %>%
+        filter(fdr.de %in% c(0.01, 0.05, 0.10, 0.5, 1) ) %>%
+        dplyr::select(-odds, -o.ci.lower, -o.ci.upper, -o.n, -level))
+
+# odds table (of being repressed given significant)
+kable(df %>% filter(count.on ==50) %>%
+        filter(fdr.de %in% c(0.01, 0.05, 0.10, 0.5, 1) ) %>%
+        dplyr::select(-prop, -p.ci.lower, -p.ci.upper, -p.n, -level))
+```
+
 Now, we'll create some static plots relating these quantities. 
 
 ```{r, width = 15, height = 10}
@@ -1253,10 +1343,11 @@ oddsplot_fixedx <- function(df, xon, ylims = c(0,60)){
              fill = fdr.dmr)) +
     scale_y_continuous(trans= "log2") +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
-    geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.3, linetype=0) +
+    geom_ribbon(aes(ymin = o.ci.lower, ymax = o.ci.upper), alpha = 0.3, linetype=0) +
     geom_point() + 
     geom_line() +
-    #viridis::scale_color_viridis(discrete = TRUE) +
+    viridis::scale_color_viridis(discrete = TRUE) +
+    viridis::scale_fill_viridis(discrete = TRUE) +
     theme_bw() +
     xlab("DESeq2 FDR") +
     ylab("Odds of gene repression") +
@@ -1274,21 +1365,21 @@ plot_grid(plotlist=plist, ncol= 3)
 ```
 
 ```{r}
-ggplot(df %>% filter(count.on %in% c(0,50,200)),
+ggplot(df,
          aes(x = fdr.de, y = odds, group = fdr.dmr, color = fdr.dmr, 
              fill = fdr.dmr)) +
     scale_y_continuous(trans= "log2") +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
-    geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.3, linetype=0) +
+    geom_ribbon(aes(ymin = o.ci.lower, ymax = o.ci.upper), alpha = 0.3, linetype=0) +
     geom_point() + 
     geom_line() +
-    #viridis::scale_color_viridis(discrete = TRUE) +
+    viridis::scale_color_viridis(discrete = TRUE) +
+    viridis::scale_fill_viridis(discrete = TRUE) +
     theme_bw() +
     xlab("DESeq2 FDR") +
     ylab("Odds of gene repression") +
     labs(color = "dmrseq FDR", fill= "dmrseq FDR") +
-    expand_limits(y=ylims) +
-  facet_grid(~ count.on)
+    facet_grid(~ count.on)
 ggsave("../plots/odds.plot.pdf", width = 13, height = 5)
 
 ```
@@ -1297,18 +1388,18 @@ We also make a plot to show the number of genes passing each threshold for the
 previous plot.
 
 ```{r}
-ggplot(df %>% filter(count.on %in% c(0,50,100)),
-         aes(x = fdr.de, y = n, group = fdr.dmr, color = fdr.dmr, 
+ggplot(df,
+         aes(x = fdr.de, y = o.n, group = fdr.dmr, color = fdr.dmr, 
              fill = fdr.dmr)) +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
     geom_point() + 
     geom_line() +
-    #viridis::scale_color_viridis(discrete = TRUE) +
+    viridis::scale_color_viridis(discrete = TRUE, direction = -1) +
+    viridis::scale_fill_viridis(discrete = TRUE, direction = -1) +
     theme_bw() +
     xlab("DESeq2 FDR") +
     ylab("Number of genes") +
     labs(color = "dmrseq FDR", fill= "dmrseq FDR") +
-    expand_limits(y=ylims) +
   facet_grid(~ count.on)
 ggsave("../plots/odds.plot.n.pdf", width = 13, height = 5)
 ```
@@ -1321,15 +1412,15 @@ ggplot(df.cgi %>% filter(count.on %in% c(50)),
              fill = fdr.dmr)) +
     scale_y_continuous(trans= "log2") +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
-    geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.3, linetype=0) +
+    geom_ribbon(aes(ymin = o.ci.lower, ymax = o.ci.upper), alpha = 0.3, linetype=0) +
     geom_point() + 
     geom_line() +
-    #viridis::scale_color_viridis(discrete = TRUE) +
+    viridis::scale_color_viridis(discrete = TRUE, direction = 1) +
+    viridis::scale_fill_viridis(discrete = TRUE, direction = 1) +
     theme_bw() +
     xlab("DESeq2 FDR") +
     ylab("Odds of gene repression") +
     labs(color = "dmrseq FDR", fill= "dmrseq FDR") +
-    expand_limits(y=ylims) +
   facet_grid(~ cgi)
 ```
 

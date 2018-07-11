@@ -231,7 +231,7 @@ ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
   xlab(expression(paste(Delta, "mCG in UMR"))) +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values = c("TRUE" = "red", "FALSE" = "black")) +
-  geom_smooth(data = ts4) +
+  geom_smooth(method = "loess", span = 0.25) +
   geom_vline(xintercept=0.3, linetype="dashed", color="grey20") +
   geom_point(data =  ts4[ts4$gene == "SOX2",], col="darkred") +
   geom_label(data =  ts4[ts4$gene == "SOX2",], col="darkred",
@@ -256,7 +256,7 @@ A1 <- ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
   geom_label(data =  ts4[ts4$gene == "SOX2",], col="darkred",
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
   labs(color= "UMR effect size") +
-  geom_smooth()
+  geom_smooth(method = "loess", span = 0.25) +
   ylim(-3,3) 
 A1
 
@@ -345,7 +345,7 @@ ggplot(ts4, aes(x = delta_mC, y = log2FC_RNAseq)) +
   xlab(expression(paste(Delta, "mCG in UMR"))) +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("black", "red")) +
-  geom_smooth(data = ts4 %>% filter(sig==TRUE)) + 
+  geom_smooth(method = "loess", span = 0.25) +
   ggtitle("Figure 5A stratified by quantiles of A") +
   geom_point(data =  ts4[ts4$gene == "SOX2",], col="darkred") +
   geom_label(data =  ts4[ts4$gene == "SOX2",], col="darkred",
@@ -609,7 +609,7 @@ ggplot(dmrs, aes(x = delta_mC, y = log2FoldChange)) +
   xlab(expression(paste(Delta, "mCG in DMR"))) +
   ylab("log2 fold change mRNA abundance") +
   scale_color_manual(values=c("black", "red")) +
-  geom_smooth(data=dmrs %>% filter(sig==TRUE)) +
+  geom_smooth(method = "loess", span = 0.25) +
   labs(color="Differentially\n Expressed")
 ```
 

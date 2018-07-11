@@ -636,7 +636,7 @@ f2a <- ggplot(dmrs.chip %>% filter(meanDiff > 0),
   xlab(expression(paste(Delta, "mCG in dmrseq DMR (dox - no dox)"))) +
   ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
   ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth()
+  geom_smooth(method = "loess", span = 0.25) 
 f2a
 ggsave(file.path(plotdir, "mCG_vs_H3K4me3_scatter_DMR.pdf"))
 saveRDS(f2a, file.path(plotdir, "mCG_vs_H3K4me3_scatter_DMR.rds"))
@@ -677,7 +677,7 @@ f2b <- ggplot(dmrs.chip %>% filter(meanDiff > 0),
   xlab("dmrseq statistic") +  
   ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
   ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth() + 
+  geom_smooth(method = "loess", span = 0.25) +
   theme(legend.position = "none")
 f2b
 ggsave(file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR.pdf"))
@@ -695,7 +695,7 @@ f2b <- ggplot(dmrs.chip %>% filter(meanDiff > 0) %>% filter(CGI),
   xlab("dmrseq statistic") +  
   ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
   ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth() + 
+  geom_smooth(method = "loess", span = 0.25) +
   theme(legend.position = "none")
 f2b
 saveRDS(f2b, file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR_CGI.rds"))
@@ -712,7 +712,7 @@ f2b <- ggplot(dmrs.chip %>% filter(meanDiff > 0) %>% filter(!CGI),
   xlab("dmrseq statistic") +  
   ylab("H3K4me3 readcount Fold Change (dox/no dox)") +
   ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth() + 
+  geom_smooth(method = "loess", span = 0.25) +
   theme(legend.position = "none")
 f2b
 saveRDS(f2b, file.path(plotdir, "stat_vs_H3K4me3_scatter_DMR_nonCGI.rds"))
@@ -750,11 +750,13 @@ odds <- dn / up
 prop
 odds
 
+se_lo <- sqrt(1/dn + 1/up)*qnorm(0.975)
+lodds.ci <- log(odds) + c(-1,1)*se_lo
+odds.ci <- exp(lodds.ci)
 prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
-odds.ci <- prop.ci*n / ((1-prop.ci)*n)
 
-prop.ci
 odds.ci
+prop.ci
 ```
 
 ## Scatterplot of methylation and RNA PolII counts
@@ -813,7 +815,7 @@ f2c <- ggplot(dmrs.chip %>% filter(meanDiff > 0),
   ylab(expression(paste(Delta, "log2 FC RNA PolII readcount (dox/no dox)"))) +
   ggtitle("Normalized ChIP-BS read counts") +
   xlim(0.07,0.75) +
-  geom_smooth()
+  geom_smooth(method = "loess", span = 0.25) 
 f2c 
 ggsave(file.path(plotdir, "mCG_vs_RNApolII_scatter_DMR.pdf"))
 saveRDS(f2c, file.path(plotdir, "mCG_vs_RNApolII_scatter_DMR.rds"))
@@ -854,7 +856,7 @@ f2d <- ggplot(dmrs.chip %>% filter(meanDiff > 0),
   xlab("dmrseq statistic") +
   ylab(expression(paste(Delta, "log2 FC RNA PolII readcount (dox/no dox)"))) +
   ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth() + 
+  geom_smooth(method = "loess", span = 0.25) +
   theme(legend.position = "none")
 f2d
 ggsave(file.path(plotdir, "stat_vs_RNApolII_scatter_DMR.pdf"))
@@ -872,7 +874,7 @@ f2d <- ggplot(dmrs.chip %>% filter(meanDiff > 0) %>% filter(CGI),
   xlab("dmrseq statistic") +
   ylab(expression(paste(Delta, "log2 FC RNA PolII readcount (dox/no dox)"))) +
   ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth() + 
+  geom_smooth(method = "loess", span = 0.25) +
   theme(legend.position = "none")
 f2d
 saveRDS(f2d, file.path(plotdir, "stat_vs_RNApolII_scatter_DMR_CGI.rds"))
@@ -889,7 +891,7 @@ f2d <- ggplot(dmrs.chip %>% filter(meanDiff > 0) %>% filter(!CGI),
   xlab("dmrseq statistic") +
   ylab(expression(paste(Delta, "log2 FC RNA PolII readcount (dox/no dox)"))) +
   ggtitle("Normalized ChIP-BS read counts") +
-  geom_smooth() + 
+  geom_smooth(method = "loess", span = 0.25) +
   theme(legend.position = "none")
 f2d
 saveRDS(f2d, file.path(plotdir, "stat_vs_RNApolII_scatter_DMR_nonCGI.rds"))
@@ -927,11 +929,13 @@ odds <- dn / up
 prop
 odds
 
+se_lo <- sqrt(1/dn + 1/up)*qnorm(0.975)
+lodds.ci <- log(odds) + c(-1,1)*se_lo
+odds.ci <- exp(lodds.ci)
 prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
-odds.ci <- prop.ci*n / ((1-prop.ci)*n)
 
-prop.ci
 odds.ci
+prop.ci
 ```
 
 # Methylation of ChIP-bound DNA
