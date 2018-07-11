@@ -1227,7 +1227,7 @@ pairs. We'll create a function to calculate the odds for a given threshold of
 DMR FDR, DE FDR, and count threshold for "on" control genes, as well as CGI status. 
 
 ```{r}
-calc_odds <- function(dmrs, fdr.dmr, fdr.de, x.on, CGI = NULL, level = 0.95){
+calc_odds <- function(dmrs, fdr.dmr, fdr.de, x.on, top.x, CGI = NULL, level = 0.95){
     dmrs.filt <- data.frame(dmrs) %>% 
       filter(qval < fdr.dmr) %>% 
       filter(padj < fdr.de) %>%
@@ -1239,6 +1239,8 @@ calc_odds <- function(dmrs, fdr.dmr, fdr.de, x.on, CGI = NULL, level = 0.95){
         dmrs.filt <- dmrs.filt %>% filter(CGI == FALSE)
       }
     }
+    lastrow <- min(nrow(dmrs.filt), top.x)
+    dmrs.filt <- dmrs.filt[1:lastrow,]
     
     n_expected <- sum(dmrs.filt$log2FoldChange < 0)
     n_unexpected <- sum(dmrs.filt$log2FoldChange >= 0)
@@ -1262,13 +1264,16 @@ calc_odds <- function(dmrs, fdr.dmr, fdr.de, x.on, CGI = NULL, level = 0.95){
         dmrs.filt <- dmrs.filt %>% filter(CGI == FALSE)
       }
     }
+    lastrow <- min(nrow(dmrs.filt), top.x)
+    dmrs.filt <- dmrs.filt[1:lastrow,]
+    
     p.n <- nrow(dmrs.filt) 
     prop <- sum(dmrs.filt$log2FoldChange < 0 & dmrs.filt$padj < fdr.de) / p.n
     prop.ci <- prop + c(-1,1)*qnorm(1-(1-level)/2)*sqrt(prop*(1-prop)/p.n)
 
     return(list(odds=odds, o.ci.lower = odds.ci[1], o.ci.upper = odds.ci[2], o.n = o.n,
                 prop=prop, p.ci.lower = prop.ci[1], p.ci.upper = prop.ci[2], p.n = p.n,
-                level = level, n = n))
+                level = level))
 }
 ```
 
@@ -1278,28 +1283,39 @@ thresholds we are interested in (dmrseq DMR FDR 0.005-0.10, DEseq2 DE FDR
 
 ```{r}
 xon <- c(0,50,250)
-dmr.fdr <- c(0.0034, 0.005, 0.01, 0.025, 0.05, 0.10)
-de.fdr <- c(1e-5, 0.01, 0.05, 0.10, 0.5, 0.75, 1)
+dmr.fdr <- c(0.005, 0.01, 0.025, 0.05, 0.10)
+de.fdr <- c(1e-5, 0.01, 0.05, 0.10, 0.25, 0.5, 0.75, 1)
 
-df <- df.cgi <- df.non <- data.frame(matrix(ncol = 13, 
+df <- df.cgi <- df.non <- data.frame(matrix(ncol = 12, 
                         nrow = length(xon) * length(dmr.fdr) * length(de.fdr)))
 colnames(df) <- colnames(df.cgi) <- colnames(df.non) <- c("fdr.dmr", "fdr.de", "count.on", 
                   "odds", "o.ci.lower", "o.ci.upper", "o.n", 
                   "prop", "p.ci.lower", "p.ci.upper", "p.n",
-                  "level", "n")
+                  "level")
 ct <- 1
 for (x in xon){
   for (y in dmr.fdr){
-    for(z in de.fdr){
+    for (z in de.fdr){
+      if(y == min(dmr.fdr)){
+        df[ct, 1:3] <- c(y, z, x)
+        df[ct, 4:12] <- unlist(calc_odds(dmrs, y, z, x, top.x=100, CGI = NULL, level = 0.95))
+      
+        df.cgi[ct, 1:3] <- c(y, z, x)
+        df.cgi[ct, 4:12] <- unlist(calc_odds(dmrs, y, z, x, top.x=100, CGI = TRUE, level = 0.95))
+      
+        df.non[ct, 1:3] <- c(y, z, x)
+        df.non[ct, 4:12] <- unlist(calc_odds(dmrs, y, z, x, top.x=100, CGI = FALSE, level = 0.95))
+        ct <- ct + 1
+      }
+      
       df[ct, 1:3] <- c(y, z, x)
-      df[ct, 4:13] <- unlist(calc_odds(dmrs, y, z, x, CGI = NULL, level = 0.95))
+      df[ct, 4:12] <- unlist(calc_odds(dmrs, y, z, x, top.x=Inf, CGI = NULL, level = 0.95))
       
       df.cgi[ct, 1:3] <- c(y, z, x)
-      df.cgi[ct, 4:13] <- unlist(calc_odds(dmrs, y, z, x, CGI = TRUE, level = 0.95))
+      df.cgi[ct, 4:12] <- unlist(calc_odds(dmrs, y, z, x, top.x=Inf, CGI = TRUE, level = 0.95))
       
       df.non[ct, 1:3] <- c(y, z, x)
-      df.non[ct, 4:13] <- unlist(calc_odds(dmrs, y, z, x, CGI = FALSE, level = 0.95))
-      
+      df.non[ct, 4:12] <- unlist(calc_odds(dmrs, y, z, x, top.x=Inf, CGI = FALSE, level = 0.95))
       ct <- ct + 1
     }
   }

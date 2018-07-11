@@ -18,8 +18,8 @@ sourceDirectory(rdir)
 neglog10 <- function(x) -log10(x)
 neglog10_inv <- function(x) 10^(-x)
 
-nl_breaks <- function() {
-  function(x) c(0.005, 0.01, 0.05, 0.10)
+nl_breaks <- function(bk) {
+  function(x) bk
 }
 
 nl_format <- function(x) {
@@ -42,9 +42,9 @@ scale_y_nl <- function(...) {
 }
 
 
-nl_trans <- function() {
+nl_trans <- function(bk) {
   scales::trans_new("neglog10", transform = neglog10, inverse = neglog10_inv,
-            breaks = nl_breaks(), format = nl_format)
+            breaks = nl_breaks(bk), format = nl_format)
 }
 
 ### FIGURE 1
@@ -79,10 +79,20 @@ ggsave("fig1.pdf", width=8.6, height=7)
 ### FIGURE 2
 df <- readRDS(file.path(resdir, "odds.table.rds")) %>% 
   filter(count.on == 50) %>% 
-  filter(fdr.de %in% c(0.01, 0.05, 0.10, 0.5, 1) )
+  filter(fdr.de %in% c(0.05, 0.25, 1) ) 
 df$fdr.dmr <- as.numeric(as.character(df$fdr.dmr))
-df$fdr.de[df$fdr.de == 1] <- "None (all genes)"
+df$fdr.de[df$fdr.de == 1] <- "All log2 FC < 0"
+df$fdr.de[df$fdr.de == 0.05] <- "log2 FC < 0 & DE qval < 0.05"
+df$fdr.de[df$fdr.de == 0.10] <- "log2 FC < 0 & DE qval < 0.10"
+df$fdr.de[df$fdr.de == 0.25] <- "log2 FC < 0 & DE qval < 0.25"
 df$fdr.de <- factor(df$fdr.de)
+df$fdr.de <- factor(df$fdr.de, levels(df$fdr.de)[c(2,3,4,1)])
+leg.lab <- "Definition of\nRepression"
+
+bks <- sort(unique(df$fdr.dmr))
+
+df2 <- df %>% filter(p.n == 100) %>% filter(fdr.de == "All log2 FC < 0")
+df <- df %>% filter(p.n != 100) 
 
 ggplot(df,
        aes(x = fdr.dmr, y = prop, group = fdr.de, color = fdr.de, 
@@ -94,13 +104,19 @@ ggplot(df,
   geom_line() +
   viridis::scale_color_viridis(discrete = TRUE, direction = -1) +
   viridis::scale_fill_viridis(discrete = TRUE, direction = -1) +
-  scale_x_continuous(trans=nl_trans()) +
+  scale_x_continuous(trans=nl_trans(bks), 
+                     labels = paste0(bks,
+                                     "\n(", sort(unique(df$p.n)), ")")) +
   theme_bw() +
   xlab("dmrseq FDR level") +
-  ylab("Probability of being significantly repressed") +
-  labs(color = "DESeq2\nFDR level", fill= "DESeq2\nFDR level")
+  ylab("Proportion of genes repressed") +
+  labs(color = leg.lab, fill= leg.lab) +
+  #geom_point(data=df2) + 
+  #geom_label(data=df2, aes(label = "Top 100\nGenes"), hjust=1.05, vjust=1.05, 
+  #           show.legend = FALSE, colour = "white", size = 3.5) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-ggsave("fig2.pdf", width = 6, height = 4)
+ggsave("fig2.pdf", width = 7, height = 4)
 
 
 ## FIGURE 3 
@@ -139,7 +155,7 @@ plot_grid(p3, leg_A, ncol = 2, rel_widths = c(1, 0.25))
 ggsave("fig4.pdf", width=7.5, height=7)
 
 ### FIGURE 5
-f4 <- readRDS(file="../plots/barplot_CGI.rds")
+f4 <- readRDS(file="../plots/barplot_CGI_allgenes.rds")
 f4 + xlab("CG density of methylated promoter")
 ggsave("fig5.pdf", width=5, height=3)
 
@@ -148,7 +164,8 @@ ggsave("fig5.pdf", width=5, height=3)
 ### SUPPLEMENTARY
 ### FIGURE S1 - figure 2 by cutoff for expressed 
 df <- readRDS(file.path(resdir, "odds.table.rds")) %>% 
-  filter(fdr.de == 1 )
+  filter(fdr.de == 1 ) %>%
+  filter(p.n != 100)
 df$count.on <- as.factor(df$count.on)
 df$fdr.dmr <- as.numeric(as.character(df$fdr.dmr))
 ggplot(df,
@@ -161,10 +178,10 @@ ggplot(df,
   geom_line() +
   viridis::scale_color_viridis(discrete = TRUE, direction = -1) +
   viridis::scale_fill_viridis(discrete = TRUE, direction = -1) +
-  scale_x_continuous(trans=nl_trans()) +
+  scale_x_continuous(trans=nl_trans(bks)) +
   theme_bw() +
   xlab("dmrseq FDR level") +
-  ylab("Probability of being repressed (log2 fold change < 0)") +
+  ylab("Proportion repressed (log2 fold change < 0)") +
   labs(color = "On genes\nthreshold", fill= "On genes\nthreshold") 
 ggsave("../plots/figS1.pdf", width = 5.5, height = 4.25)
 
@@ -213,10 +230,17 @@ ggsave("figS5.pdf", width=8.6, height=7)
 ### FIGURE S6 - figure 2 by CGI status
 df <- readRDS(file.path(resdir, "odds.table.cgi.rds")) %>% 
   filter(count.on == 50) %>% 
-  filter(fdr.de %in% c(0.01, 0.05, 0.10, 0.5, 1) )
+  filter(fdr.de %in% c(0.05, 0.25, 1) ) %>%
+  filter(p.n != 100)
 df$fdr.dmr <- as.numeric(as.character(df$fdr.dmr))
-df$fdr.de[df$fdr.de == 1] <- "None (all genes)"
+df$fdr.de[df$fdr.de == 1] <- "All log2 FC < 0"
+df$fdr.de[df$fdr.de == 0.05] <- "log2 FC < 0 & DE qval < 0.05"
+df$fdr.de[df$fdr.de == 0.10] <- "log2 FC < 0 & DE qval < 0.10"
+df$fdr.de[df$fdr.de == 0.25] <- "log2 FC < 0 & DE qval < 0.25"
 df$fdr.de <- factor(df$fdr.de)
+df$fdr.de <- factor(df$fdr.de, levels(df$fdr.de)[c(2,3,4,1)])
+leg.lab <- "Definition of\nRepression"
+
 df <- df %>% 
   mutate(cgi = ifelse(cgi, "CG Island", "non-CG Insland")) 
 
@@ -230,14 +254,14 @@ ggplot(df,
   geom_line() +
   viridis::scale_color_viridis(discrete = TRUE, direction = -1) +
   viridis::scale_fill_viridis(discrete = TRUE, direction = -1) +
-  scale_x_continuous(trans=nl_trans()) +
+  scale_x_continuous(trans=nl_trans(bks)) +
   theme_bw() +
   xlab("dmrseq FDR level") +
-  ylab("Probability of being significantly repressed") +
-  labs(color = "DESeq2\nFDR level", fill= "DESeq2\nFDR level") +
+  ylab("Proportion significantly repressed") +
+  labs(color = leg.lab, fill= leg.lab) +
   facet_grid(~ cgi)
 
-ggsave("../plots/figS6.pdf", width = 8.6, height = 4)
+ggsave("../plots/figS6.pdf", width = 8, height = 3.25)
 
 ### FIGURE S7 - scatterplot h3k4 and RNA pol II faceted by CGI status
 # load subfigures
@@ -261,10 +285,16 @@ ggsave("figS7.pdf", width=8.6, height=7)
 
 ### FIGURE S8 - figure 2 by number of genes
 df <- readRDS(file.path(resdir, "odds.table.rds")) %>%
-  filter(fdr.de %in% c(0.01, 0.05, 0.10, 0.5, 1) )
+  filter(fdr.de %in% c(0.05, 0.25, 1) )  %>%
+  filter(p.n != 100)
 df$fdr.dmr <- as.numeric(as.character(df$fdr.dmr))
-df$fdr.de[df$fdr.de == 1] <- "None (all genes)"
+df$fdr.de[df$fdr.de == 1] <- "All log2 FC < 0"
+df$fdr.de[df$fdr.de == 0.05] <- "log2 FC < 0 & DE qval < 0.05"
+df$fdr.de[df$fdr.de == 0.10] <- "log2 FC < 0 & DE qval < 0.10"
+df$fdr.de[df$fdr.de == 0.25] <- "log2 FC < 0 & DE qval < 0.25"
 df$fdr.de <- factor(df$fdr.de)
+df$fdr.de <- factor(df$fdr.de, levels(df$fdr.de)[c(2,3,4,1)])
+leg.lab <- "Definition of\nRepression"
 
 ggplot(df,
        aes(x = fdr.dmr, y = o.n, group = fdr.de, color = fdr.de, 
@@ -276,11 +306,12 @@ ggplot(df,
   geom_line() +
   viridis::scale_color_viridis(discrete = TRUE, direction = -1) +
   viridis::scale_fill_viridis(discrete = TRUE, direction = -1) +
-  scale_x_continuous(trans=nl_trans()) +
+  scale_x_continuous(trans=nl_trans(bks)) +
   theme_bw() +
   xlab("dmrseq FDR level") +
   ylab("Number of genes") +
   labs(color = "DESeq2\nFDR level", fill= "DESeq2\nFDR level") +
-  facet_wrap(~ count.on, ncol = 3)
+  facet_wrap(~ count.on, ncol = 3) + 
+  theme(legend.position = "bottom")
 
-ggsave("../plots/figS8.pdf", width = 10.5, height = 3.5)
+ggsave("../plots/figS8.pdf", width = 8.5, height = 3.75)
