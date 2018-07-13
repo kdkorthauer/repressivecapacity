@@ -1,0 +1,133 @@
+---
+title: "Bonus figures"
+author: "Keegan Korthauer"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+   html_document:
+        toc: true
+        toc_float: true
+        highlight: tango
+        number_sections: true
+---
+  
+# Gif of Figure 1
+
+Here we recreate Figure 1C and D, along with an animation that demonstrates the
+effect of changing the dmrseq statistic cufoff. The `mCG-RNAseq-analysis.Rmd` 
+vignette needs to be run first since preprocessing steps are carried out there.
+
+# Workspace Setup
+
+First we load the necessary packages.
+
+```{r, workspace, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(R.utils)
+library(cowplot)
+library(animation)
+
+# data directory
+datdir <- "../DATA"
+dir.create(datdir, showWarnings = FALSE)
+
+# rscript directory
+rdir <- "../R/"
+sourceDirectory(rdir)
+
+# results directory
+resdir <- "../RESULTS"
+dir.create(resdir, showWarnings = FALSE)
+
+# FDR significance levels for differential expression and DMR analyses
+fdrlevel.dmr <- 0.10
+fdrlevel.dmr.highconf <- 0.01
+fdrlevel.de <- 0.05
+
+# threshold for considering a gene "on" in control (mean normalized counts)
+on_thresh <- 50
+
+# file containing dmr and expr data
+dmrtab.file <- file.path(resdir, "table_dmrseq_dmrs_genes_all.rds")
+```
+
+# Function to create plot
+
+```{r}
+#' @param on_thresh threshold for gene to be considered on in the control samples
+#' @param cutoff threshold for dmrseq statistic to be included in this frame
+#' @param dmrtab 
+plotOneFrame <- function(dmrtab, cutoff, on_thresh=50){
+  
+  dmrs <- data.frame(dmrtab) %>% 
+    filter(control_expr > on_thresh) %>%
+    mutate(sig = padj < fdrlevel.de) %>%
+    mutate(ptcol2 = ifelse(sig, "Differentially Expressed", 
+                           "Not Differentially Expressed"),
+           ptcol3 = ifelse(stat < cutoff, "Not significant (DMR)", 
+                           ifelse(sig, "DMR and DE", "Not significant (DE)"))) %>%
+    mutate(color = ifelse(log2FoldChange > 0, "Increase", "Decrease")) 
+  
+  sox2col <- ifelse(dmrs[dmrs$gene == "SOX2",]$stat > cutoff,
+                    "darkred", "grey20")
+  
+  A <- ggplot(dmrs, aes(x = stat, y = log2FoldChange)) +
+    geom_hline(yintercept=0, col="black") +
+    geom_hline(yintercept=0, col="white", linetype="dashed") +
+    geom_point(size=0.5, alpha=0.75, aes(color = ptcol3)) + 
+    theme_bw() + 
+    xlab("DMR test statistic") +
+    ylab("log2 mRNA fold change") +
+    scale_color_manual(values=c("red", "black", "grey")) +
+    geom_smooth(method = "loess", span = 0.25) +
+    labs(color="Significance")  +
+    geom_point(data =  dmrs[dmrs$gene == "SOX2",], col=sox2col) +
+    geom_label(data =  dmrs[dmrs$gene == "SOX2",], col=sox2col,
+               aes(label="SOX2"), hjust=0.5, vjust=1.25) +
+    ggtitle("Methylation vs Expression") +
+    ylim(-3,3) + 
+    geom_vline(xintercept=cutoff, 
+               linetype="dashed", color="grey20") +
+    theme(legend.position = "none")
+  
+  B <- ggplot(dmrs %>% filter(stat > cutoff),
+             aes(x=log2FoldChange)) +
+   geom_histogram(breaks=seq(-3,3, by=1/4),
+                 aes(y=..count../sum(dmrs$stat > cutoff)*4, 
+                     fill=color)) + 
+   scale_fill_manual(values = c("#0072B2", "#E69F00")) + 
+   theme_bw() + 
+   geom_vline(xintercept=0, 
+               linetype="dashed", color="grey20") +
+   xlab("log2 mRNA fold change") + 
+   ylab("Density") +
+   ggtitle("Expression in significant DMRs") +
+   labs(fill="Direction \nof effect") +
+   xlim(-3,3) +
+   theme(legend.position = "none") + 
+   ylim(0,1.8)  +
+   draw_label("Activated", 2.2, 1.75, size = 12) +
+   draw_label("Repressed", -2, 1.75, size = 12)
+  
+  p <- plot_grid(A, B, ncol = 2) 
+  print(p)
+}
+
+```
+
+# Construct gif
+
+```{r}
+dmrtab <- readRDS(file= dmrtab.file)
+
+saveGIF({
+  for(i in seq(8,30,by=1/3)){
+    plotOneFrame(dmrtab, cutoff = i)
+  }
+}, 
+  file.path("../plots/fig1.gif"), interval = .05, 
+  ani.height = 250, ani.width = 500)
+
+```
+
