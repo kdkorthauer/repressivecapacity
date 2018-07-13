@@ -59,7 +59,7 @@ resdir <- "../RESULTS"
 dir.create(resdir, showWarnings = FALSE)
 
 # parallel backend
-ncores <- 6
+ncores <- 4
 register(MulticoreParam(workers=ncores))
 
 # FDR significance levels for differential expression and DMR analyses
@@ -328,8 +328,8 @@ if (!file.exists(resfile)){
   regions <- dmrseq(bs, testCovariate = "condition",
                     bpSpan = 500,
                     maxGap = 500,
-                    maxPerms = 6,
-                    chrsPerChunk = 2)
+                    maxPerms = 20,
+                    chrsPerChunk = 3)
   saveRDS(regions, file=resfile)
 }else{
   regions <- readRDS(resfile)
