@@ -433,7 +433,7 @@ ol <- findOverlaps(peaks.common,
 peaks.common <- peaks.common[-unique(ol@from),]
 
 # subset on common peaks with low methylation (< 0.2 in ctrl and dox)
-#load bsseq data (processed in MethylationCountsAnalysis.Rmd)
+#load bsseq data (processed in mCG-RNAseq-analysis.Rmd)
 bs <- readRDS(file.path(datdir, "bsseq.rds"))
 bs <- bs[,pData(bs)$dox != "Dox Withdrawal" | pData(bs)$condition == "Control"]
 
@@ -581,7 +581,7 @@ We first start with a scatterplot of methylation difference and
 difference in H3K4me3. 
 
 First, we need to find overlaps between the dmrseq DMRs and H3K4me3 reads.
-The DMRs were prepared in the `methylationCountAnalysis.Rmd` analysis.
+The DMRs were prepared in the `mCG-RNAseq-analysis.Rmd` analysis.
 
 ```{r, intersectchip-dmrs}
 dmrs <- (dmrs <- readRDS(file.path(resdir, "regions.rds")))[dmrs$qval < 0.10, ]
@@ -762,7 +762,7 @@ prop.ci
 ## Scatterplot of methylation and RNA PolII counts
 
 First, we need to find overlaps between the dmrseq DMRs and DNA PolII reads.
-The DMRs were prepared in the `methylationCountAnalysis.Rmd` analysis.
+The DMRs were prepared in the `mCG-RNAseq-analysis.Rmd` analysis.
 
 ```{r, intersectchip-dmrs-pol2}
 dmrs <- (dmrs <- readRDS(file.path(resdir, "regions.rds")))[dmrs$qval < 0.10, ]
@@ -954,7 +954,7 @@ In more detail, Figure 3D and E are used to support the following claims:
 To construct these figures, we need to intersect the ChIP-BS data with the DMRs. 
 we'll use both the whole genome bisulfite sequencing data and the ChIP-BS
 data. See the 
-`methylationCountAnalysis.Rmd` for details on how the WGBS data is downloaded and 
+`mCG-RNAseq-analysis.Rmd` for details on how the WGBS data is downloaded and 
 processed.
 
 In the paper, the authors used merged peaks between control and dox (using peak 
