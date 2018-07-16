@@ -48,6 +48,7 @@ library(GenomicAlignments)
 library(dmrseq)
 library(DelayedMatrixStats)
 library(Rsubread)
+library(binom)
 
 # data directory
 datdir <- "../DATA"
@@ -753,7 +754,7 @@ odds
 se_lo <- sqrt(1/dn + 1/up)*qnorm(0.975)
 lodds.ci <- log(odds) + c(-1,1)*se_lo
 odds.ci <- exp(lodds.ci)
-prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+prop.ci <- binom.confint(dn, n, method="wilson", conf.level = 0.95)
 
 odds.ci
 prop.ci
@@ -932,7 +933,7 @@ odds
 se_lo <- sqrt(1/dn + 1/up)*qnorm(0.975)
 lodds.ci <- log(odds) + c(-1,1)*se_lo
 odds.ci <- exp(lodds.ci)
-prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+prop.ci <- binom.confint(dn, n, method="wilson", conf.level = 0.95)
 
 odds.ci
 prop.ci

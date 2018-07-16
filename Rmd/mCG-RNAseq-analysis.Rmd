@@ -45,6 +45,7 @@ library(DelayedMatrixStats)
 library(viridis)
 library(cowplot)
 library(knitr)
+library(binom)
 
 # data directory
 datdir <- "../DATA"
@@ -419,7 +420,7 @@ rnks <- 1:25
 dmrseq_only <- regions[-unique(ol@from),]
 dmrseq_only <- dmrseq_only[order(abs(dmrseq_only$stat), decreasing = TRUE), ]
 
-pdf("../plots/figS2a.pdf", width = 7, height = 3)
+pdf("../plots/figS3a.pdf", width = 7, height = 3)
 plotDMRs(bs, regions=dmrseq_only[rnks,], testCovariate="condition")
 dev.off()
 
@@ -427,7 +428,7 @@ DSS_only <- dmrs.dss[-unique(ol@to),]
 DSS_only <- DSS_only[order(DSS_only$methylation_level_in_ZF_D3A_plus_dox -
                            DSS_only$methylation_level_in_MCF7_control, decreasing = TRUE), ]
 
-pdf("../plots/figS2b.pdf", width = 7, height = 3)
+pdf("../plots/figS3b.pdf", width = 7, height = 3)
 plotDMRs(bs, regions=DSS_only[rnks,], testCovariate="condition", 
          qval = FALSE, stat = FALSE)
 dev.off()
@@ -955,7 +956,7 @@ A2 <- ggplot(dmrsa %>% filter(CGI), aes(x = stat, y = log2FoldChange)) +
             aes(label="SOX2"), hjust=0.5, vjust=1.25) +
   ggtitle("dmrseq DMRs") +
   ylim(-3,3) + 
-  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<fdrlevel.dmr.highconf]), 
+  geom_vline(xintercept=min(dmrsa$stat[dmrsa$qval<fdrlevel.dmr.highconf & dmrsa$CGI]), 
              linetype="dashed", color="grey20")
 A2 
 
@@ -975,7 +976,7 @@ A2 <- ggplot(dmrsa %>% filter(!CGI), aes(x = stat, y = log2FoldChange)) +
   labs(color="Significance")  +
   ggtitle("dmrseq DMRs") +
   ylim(-3,3) + 
-  geom_vline(xintercept=min(dmrsa$stat[dmrs$qval<fdrlevel.dmr.highconf]), 
+  geom_vline(xintercept=min(dmrsa$stat[dmrsa$qval<fdrlevel.dmr.highconf & !dmrsa$CGI]), 
              linetype="dashed", color="grey20")
 A2 
 
@@ -1031,7 +1032,7 @@ odds <- de_dn / de_up
 se_lo <- sqrt(1/de_dn + 1/de_up)*qnorm(0.975)
 lodds.ci <- log(odds) + c(-1,1)*se_lo
 odds.ci <- exp(lodds.ci)
-prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+prop.ci <- binom.confint(de_dn, n, method="wilson", conf.level = 0.95)
 
 odds.ci
 prop.ci
@@ -1059,7 +1060,7 @@ odds <- de / ee
 se_lo <- sqrt(1/de + 1/ee)*qnorm(0.975)
 lodds.ci <- log(odds) + c(-1,1)*se_lo
 odds.ci <- exp(lodds.ci)
-prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+prop.ci <- binom.confint(de, n, method="wilson", conf.level = 0.95)
 
 odds.ci
 prop.ci
@@ -1170,7 +1171,7 @@ odds <- de_dn / de_up
 se_lo <- sqrt(1/de_dn + 1/de_up)*qnorm(0.975)
 lodds.ci <- log(odds) + c(-1,1)*se_lo
 odds.ci <- exp(lodds.ci)
-prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+prop.ci <- binom.confint(de_dn, n, method="wilson", conf.level = 0.95)
 
 odds.ci
 prop.ci
@@ -1199,7 +1200,7 @@ odds <- de_dn / de_up
 se_lo <- sqrt(1/de_dn + 1/de_up)*qnorm(0.975)
 lodds.ci <- log(odds) + c(-1,1)*se_lo
 odds.ci <- exp(lodds.ci)
-prop.ci <- prop + c(-1,1)*qnorm(0.975)*sqrt(prop*(1-prop)/n)
+prop.ci <- binom.confint(de_dn, n, method="wilson", conf.level = 0.95)
 
 odds.ci
 prop.ci
@@ -1268,8 +1269,10 @@ calc_odds <- function(dmrs, fdr.dmr, fdr.de, x.on, top.x, CGI = NULL, level = 0.
     dmrs.filt <- dmrs.filt[1:lastrow,]
     
     p.n <- nrow(dmrs.filt) 
-    prop <- sum(dmrs.filt$log2FoldChange < 0 & dmrs.filt$padj < fdr.de) / p.n
-    prop.ci <- prop + c(-1,1)*qnorm(1-(1-level)/2)*sqrt(prop*(1-prop)/p.n)
+    ci <- binom.confint(sum(dmrs.filt$log2FoldChange < 0 & dmrs.filt$padj < fdr.de),
+                           p.n, method="wilson", conf.level = level)
+    prop.ci <- c(max(ci$lower, 0), min(ci$upper, 1))
+    prop <- ci$mean
 
     return(list(odds=odds, o.ci.lower = odds.ci[1], o.ci.upper = odds.ci[2], o.n = o.n,
                 prop=prop, p.ci.lower = prop.ci[1], p.ci.upper = prop.ci[2], p.n = p.n,
@@ -1381,7 +1384,7 @@ plot_grid(plotlist=plist, ncol= 3)
 ```
 
 ```{r}
-ggplot(df,
+ggplot(df %>% filter(o.n != 100),
          aes(x = fdr.de, y = odds, group = fdr.dmr, color = fdr.dmr, 
              fill = fdr.dmr)) +
     scale_y_continuous(trans= "log2") +
@@ -1404,7 +1407,7 @@ We also make a plot to show the number of genes passing each threshold for the
 previous plot.
 
 ```{r}
-ggplot(df,
+ggplot(df %>% filter(o.n != 100),
          aes(x = fdr.de, y = o.n, group = fdr.dmr, color = fdr.dmr, 
              fill = fdr.dmr)) +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
@@ -1423,7 +1426,7 @@ ggsave("../plots/odds.plot.n.pdf", width = 13, height = 5)
 We also make the odds plot stratified by CG island status.
 
 ```{r}
-ggplot(df.cgi %>% filter(count.on %in% c(50)),
+ggplot(df.cgi %>% filter(count.on %in% c(50)) %>% filter(o.n != 100),
          aes(x = fdr.de, y = odds, group = fdr.dmr, color = fdr.dmr, 
              fill = fdr.dmr)) +
     scale_y_continuous(trans= "log2") +
