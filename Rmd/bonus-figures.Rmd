@@ -10,12 +10,6 @@ output:
         number_sections: true
 ---
   
-# Gif of Figure 1
-
-Here we recreate Figure 1C and D, along with an animation that demonstrates the
-effect of changing the dmrseq statistic cufoff. The `mCG-RNAseq-analysis.Rmd` 
-vignette needs to be run first since preprocessing steps are carried out there.
-
 # Workspace Setup
 
 First we load the necessary packages.
@@ -33,11 +27,15 @@ datdir <- "../DATA"
 dir.create(datdir, showWarnings = FALSE)
 
 # rscript directory
-rdir <- "../R/"
+rdir <- "../R"
 sourceDirectory(rdir)
 
 # results directory
 resdir <- "../RESULTS"
+dir.create(resdir, showWarnings = FALSE)
+
+# results directory
+plotdir <- "../plots"
 dir.create(resdir, showWarnings = FALSE)
 
 # FDR significance levels for differential expression and DMR analyses
@@ -52,7 +50,14 @@ on_thresh <- 50
 dmrtab.file <- file.path(resdir, "table_dmrseq_dmrs_genes_all.rds")
 ```
 
-# Function to create plot
+# Gif of Figure 1
+
+Here we recreate Figure 1C and D, along with an animation that demonstrates the
+effect of changing the dmrseq statistic cufoff. The `mCG-RNAseq-analysis.Rmd` 
+vignette needs to be run first since preprocessing steps are carried out there.
+
+
+## Function to create plot
 
 ```{r}
 #' @param on_thresh threshold for gene to be considered on in the control samples
@@ -126,7 +131,7 @@ plotOneFrame <- function(dmrtab, cutoff, on_thresh=50){
 
 ```
 
-# Construct gif
+## Construct gif
 
 ```{r}
 dmrtab <- readRDS(file= dmrtab.file)
@@ -140,4 +145,219 @@ saveGIF({
   ani.height = 250, ani.width = 500)
 
 ```
+
+# Heatmap plot of DMRs
+
+Here we create heatmap plots of methylation differences in DMRs found by dmrseq, and compare them 
+the DSS DMRs. We'll use an FDR cutoff of 0.05 for dmrseq, as well as all of the DMRs found by DSS.
+
+## Workspace setup
+
+Here we point to a few additional files we'll need to create these plots, as well as load additional
+packages.
+
+```{r}
+library(EnrichedHeatmap)
+library(circlize)
+library(RColorBrewer)
+library(R.utils)
+library(data.table)
+library(DelayedMatrixStats)
+library(locfit)
+
+# DSS DMR file
+dssfile <- file.path(datdir, "170506-2.txt")
+
+# dmrseq DMRfile
+dmrseq.file <- file.path(resdir, "regions.rds")
+
+# bsseq obj
+bfile <- file.path(datdir, "bsseq.rds")
+
+# rscript directory
+rdir <- "../R/"
+sourceDirectory(rdir)
+
+# read in bsseq obj
+bs <- readRDS(file= bfile)
+bs <- bs[,pData(bs)$condition == "Control" | 
+          pData(bs)$dox == "DOX"]
+
+# read in DSS DMR file
+if (!file.exists(dssfile)){
+  download.file(url = "https://www.biorxiv.org/highwire/filestream/57972/field_highwire_adjunct_files/1/170506-2.txt",
+              destfile =  dssfile)
+}
+dmrs.dss <- fread(dssfile, header=FALSE)  #DMRs
+colnames(dmrs.dss) <- c("chr", "start", "end", "number_of_CpG_cytosines_in_region",
+                   "methylation_level_in_MCF7_control", "methylation_level_in_ZF_D3A_plus_dox",
+                   "methylation_level_in_ZF_D3A_dox_wd", "closest_gene_promoter",
+                   "distance_to_nearest_promoter", "promoter_classification",
+                   "CpGisland_classification", "genebody_classification",
+                   "enhancer_classification")
+dmrs.dss <- makeGRangesFromDataFrame(dmrs.dss, keep.extra.columns = TRUE)
+dmrs.dss$meanDiff <- dmrs.dss$methylation_level_in_ZF_D3A_plus_dox - dmrs.dss$methylation_level_in_MCF7_control
+
+
+# read in dmrseq DMRs
+dmrs <- readRDS(file= dmrseq.file)
+dmrs <- dmrs[dmrs$qval < 0.05, ]
+```
+
+There are roughly the same number of DMRs for both methods: `r length(dmrseq)` for dmrseq and `r length(dmrs.dss)` for DSS.
+
+## Function to create plot
+
+```{r}
+
+regions <- GRangesList(dmrs[,0], dmrs.dss[,0])
+regions <- lapply(regions, function(x) {
+  resize(x, width(x) + 4000 * 2, fix = "center")
+})
+reduced_regions <- sort(reduce(unlist(GRangesList(lapply(regions, granges)))))
+
+
+se <- SummarizedExperiment(
+      assays = as.matrix(getMeth(bs, type="raw")),
+      rowRanges = rowRanges(bs),
+      colData = colData(bs))
+se <- subsetByOverlaps(se, reduced_regions )
+meth <- sapply(c("Methylated", "Control"), function(j) {
+      rowMeans2(assay(se, withDimnames = FALSE), cols = grep(j, pData(bs)$condition),
+                na.rm = TRUE)
+    })
+meth <- as.matrix(meth[,1] - meth[,2])
+GR <- granges(se)
+mcols(GR) <- as(meth, "DataFrame")
+names(mcols(GR)) <- "delta_mCG"
+
+meth_col_fun = colorRamp2(c(-0.5, 0, 0.5), c("blue", "white", "red"))
+
+
+# binomial smoothing
+sf <- function (x) 
+{
+   l = !is.na(x)
+    if (sum(l) >= 2) {
+        oe1 = try(x <- suppressWarnings(predict(locfit(x[l] ~ 
+            lp(seq_along(x)[l], nn = 0.1, h = 0.8),
+            maxk = 1000,
+            alpha = 0.35, 
+            family = "binomial"
+            ), seq_along(x))), 
+            silent = TRUE)
+        if (inherits(oe1, "try-error")) {
+            oe2 = try(x <- suppressWarnings(predict(loess(x[l] ~ 
+                seq_along(x)[l], control = loess.control(surface = "direct")), 
+                seq_along(x))))
+            if (inherits(oe2, "try-error")) {
+                stop("error when doing locfit or loess smoothing")
+            }
+            else {
+                return(x)
+            }
+        }
+        else {
+            return(x)
+        }
+    }
+    else {
+        stop("Too few data points.")
+    }
+    return(x)
+}
+
+
+enrichheatplot <- function(GR, reg = NULL, splitReg = NULL, plotlabel = "mCG",
+                           rowOrder = NULL, fixWidth = TRUE, ext = 2000){
+  
+  if(!fixWidth){
+    reg <- resize(reg, 1, fix = "center")
+    axn <- c(as.character(-ext), "0", as.character(ext))
+  }else{
+    axn <- c(as.character(-ext), "start", "end", as.character(ext))
+  }
+  
+  mat<- normalizeToMatrix(GR, reg, 
+                          value_column = colnames(mcols(GR)), 
+                          mean_mode = "absolute",
+                          extend = ext, w = 25, background = NA, smooth = TRUE,
+                          smooth_fun = sf)
+  
+  # split if splitting
+  if (!is.null(splitReg)){
+    fact <- ifelse(countOverlaps(reg, splitReg) > 0,
+                   "TFBS", "no TFBS")
+    linecol <- c("red", "blue")
+  }else{
+    fact <- NULL
+    linecol <- "red"
+  }
+  
+  if (!is.null(rowOrder)){
+    rowOrder <- order(abs(mcols(reg)[, names(mcols(reg)) == rowOrder]), decreasing = TRUE)
+  }else{
+    rowOrder <- order(enriched_score(mat), decreasing = TRUE)
+  }
+	
+	plt <- EnrichedHeatmap(mat, col = meth_col_fun, 
+	                        show_heatmap_legend = TRUE, 
+	                        column_title = plotlabel,
+	                        axis_name = axn,
+	                        row_order = rowOrder,
+	                        top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = linecol),
+	                                                                                 ylim=c(0,0.5), 
+	                                                                                 yaxis_facing = "left")),
+	                        use_raster = TRUE,
+	                        axis_name_rot = 90,
+	                        name = "mCG diff",
+	                        raster_quality = 5,
+	                        split = fact) 
+
+	plt
+}
+
+```
+
+## Generate heatmap plots
+
+Here we use the previous function to generate the heatmaps of methylation difference in DMRs.
+
+```{r}
+####################################################################
+# stretch all regions to identical size
+####################################################################
+
+
+pdf(file.path(resdir, "dmrseq_DMRs_heatmap_fixedwidth.pdf"), height = 5.25, width = 2.15)
+pt <- enrichheatplot(GR, reg = dmrs, plotlabel = expression(paste(Delta, "mCG dmrseq")))
+pt
+dev.off()
+
+
+pdf(file.path(resdir, "DSS_DMRs_heatmap_fixedwidth.pdf"), height = 5.25, width = 2.15)
+pt <- enrichheatplot(GR, reg = dmrs.dss, plotlabel = expression(paste(Delta, "mCG DSS")))
+pt
+dev.off()
+
+
+####################################################################
+# from center of regions out
+####################################################################
+
+pdf(file.path(resdir, "dmrseq_DMRs_heatmap.pdf"), height = 5.25, width = 2.15)
+pt <- enrichheatplot(GR, reg = dmrs, plotlabel = expression(paste(Delta, "mCG dmrseq")), fixWidth = FALSE)
+pt
+dev.off()
+
+
+pdf(file.path(resdir, "DSS_DMRs_heatmap.pdf"), height = 5.25, width = 2.15)
+pt <- enrichheatplot(GR, reg = dmrs.dss, plotlabel = expression(paste(Delta, "mCG DSS")), fixWidth = FALSE)
+pt
+dev.off()
+```
+
+
+
+
 
